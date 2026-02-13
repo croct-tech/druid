@@ -524,9 +524,6 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
 
       latestSequenceFromStream = recordSupplier.getLatestSequenceNumbers(partitions);
     }
-    catch (InterruptedException e) {
-      throw new StreamException(e);
-    }
     finally {
       getRecordSupplierLock().unlock();
     }
