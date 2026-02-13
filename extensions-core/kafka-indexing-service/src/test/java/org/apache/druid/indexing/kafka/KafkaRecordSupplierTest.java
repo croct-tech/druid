@@ -772,8 +772,6 @@ public class KafkaRecordSupplierTest
     StreamPartition<KafkaTopicPartition> streamPartition = StreamPartition.of(TOPIC, PARTITION_0);
     TopicPartition topicPartition = streamPartition.getPartitionId().asTopicPartition(streamPartition.getStream());
 
-    EasyMock.expect(consumer.position(EasyMock.anyObject(TopicPartition.class)))
-            .andThrow(new NoOffsetForPartitionException(Collections.singleton(topicPartition)));
     EasyMock.expect(consumer.beginningOffsets(EasyMock.anyObject()))
             .andReturn(Map.of(topicPartition, 0L));
     EasyMock.replay(consumer);
@@ -791,8 +789,6 @@ public class KafkaRecordSupplierTest
     StreamPartition<KafkaTopicPartition> streamPartition = StreamPartition.of(TOPIC, PARTITION_0);
     TopicPartition topicPartition = streamPartition.getPartitionId().asTopicPartition(streamPartition.getStream());
 
-    EasyMock.expect(consumer.position(EasyMock.anyObject(TopicPartition.class)))
-            .andThrow(new NoOffsetForPartitionException(Collections.singleton(topicPartition)));
     EasyMock.expect(consumer.endOffsets(EasyMock.anyObject()))
             .andReturn(Map.of(topicPartition, 42L));
     EasyMock.replay(consumer);
@@ -810,8 +806,6 @@ public class KafkaRecordSupplierTest
     StreamPartition<KafkaTopicPartition> streamPartition = StreamPartition.of(TOPIC, PARTITION_0);
     TopicPartition topicPartition = streamPartition.getPartitionId().asTopicPartition(streamPartition.getStream());
 
-    EasyMock.expect(consumer.position(EasyMock.anyObject(TopicPartition.class)))
-            .andThrow(new NoOffsetForPartitionException(Collections.singleton(topicPartition)));
     EasyMock.expect(consumer.beginningOffsets(EasyMock.anyObject()))
             .andReturn(Map.of(topicPartition, 0L));
     EasyMock.replay(consumer);
