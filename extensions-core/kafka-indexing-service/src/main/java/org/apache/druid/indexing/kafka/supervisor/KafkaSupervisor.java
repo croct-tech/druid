@@ -522,13 +522,7 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
           .map(e -> new StreamPartition<>(getIoConfig().getStream(), e))
           .collect(Collectors.toSet());
 
-      recordSupplier.seekToLatest(partitions);
-
-      latestSequenceFromStream =
-          partitions.stream().collect(Collectors.toMap(StreamPartition::getPartitionId, recordSupplier::getPosition));
-    }
-    catch (InterruptedException e) {
-      throw new StreamException(e);
+      latestSequenceFromStream = recordSupplier.getLatestSequenceNumbers(partitions);
     }
     finally {
       getRecordSupplierLock().unlock();
