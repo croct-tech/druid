@@ -55,8 +55,7 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import org.mockito.ArgumentMatchers;
-import org.mockito.Mockito;
+import org.easymock.EasyMock;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -769,68 +768,76 @@ public class KafkaRecordSupplierTest
   @Test
   public void testGetEarliestSequenceNumberFailsDuringLeaderElection()
   {
-    KafkaConsumer<byte[], byte[]> consumer = Mockito.mock(KafkaConsumer.class);
+    KafkaConsumer<byte[], byte[]> consumer = EasyMock.createMock(KafkaConsumer.class);
     StreamPartition<KafkaTopicPartition> streamPartition = StreamPartition.of(TOPIC, PARTITION_0);
     TopicPartition topicPartition = streamPartition.getPartitionId().asTopicPartition(streamPartition.getStream());
 
-    Mockito.when(consumer.position(ArgumentMatchers.any(TopicPartition.class)))
-           .thenThrow(new NoOffsetForPartitionException(Collections.singleton(topicPartition)));
-    Mockito.when(consumer.beginningOffsets(ArgumentMatchers.<TopicPartition>anyCollection()))
-           .thenReturn(Map.of(topicPartition, 0L));
+    EasyMock.expect(consumer.position(EasyMock.anyObject(TopicPartition.class)))
+            .andThrow(new NoOffsetForPartitionException(Collections.singleton(topicPartition)));
+    EasyMock.expect(consumer.beginningOffsets(EasyMock.anyObject()))
+            .andReturn(Map.of(topicPartition, 0L));
+    EasyMock.replay(consumer);
 
     KafkaRecordSupplier recordSupplier = new KafkaRecordSupplier(consumer, false);
 
     Assert.assertEquals(Long.valueOf(0), recordSupplier.getEarliestSequenceNumber(streamPartition));
+    EasyMock.verify(consumer);
   }
 
   @Test
   public void testGetLatestSequenceNumberFailsDuringLeaderElection()
   {
-    KafkaConsumer<byte[], byte[]> consumer = Mockito.mock(KafkaConsumer.class);
+    KafkaConsumer<byte[], byte[]> consumer = EasyMock.createMock(KafkaConsumer.class);
     StreamPartition<KafkaTopicPartition> streamPartition = StreamPartition.of(TOPIC, PARTITION_0);
     TopicPartition topicPartition = streamPartition.getPartitionId().asTopicPartition(streamPartition.getStream());
 
-    Mockito.when(consumer.position(ArgumentMatchers.any(TopicPartition.class)))
-           .thenThrow(new NoOffsetForPartitionException(Collections.singleton(topicPartition)));
-    Mockito.when(consumer.endOffsets(ArgumentMatchers.<TopicPartition>anyCollection()))
-           .thenReturn(Map.of(topicPartition, 42L));
+    EasyMock.expect(consumer.position(EasyMock.anyObject(TopicPartition.class)))
+            .andThrow(new NoOffsetForPartitionException(Collections.singleton(topicPartition)));
+    EasyMock.expect(consumer.endOffsets(EasyMock.anyObject()))
+            .andReturn(Map.of(topicPartition, 42L));
+    EasyMock.replay(consumer);
 
     KafkaRecordSupplier recordSupplier = new KafkaRecordSupplier(consumer, false);
 
     Assert.assertEquals(Long.valueOf(42), recordSupplier.getLatestSequenceNumber(streamPartition));
+    EasyMock.verify(consumer);
   }
 
   @Test
   public void testIsOffsetAvailableSurvivesLeaderElection()
   {
-    KafkaConsumer<byte[], byte[]> consumer = Mockito.mock(KafkaConsumer.class);
+    KafkaConsumer<byte[], byte[]> consumer = EasyMock.createMock(KafkaConsumer.class);
     StreamPartition<KafkaTopicPartition> streamPartition = StreamPartition.of(TOPIC, PARTITION_0);
     TopicPartition topicPartition = streamPartition.getPartitionId().asTopicPartition(streamPartition.getStream());
 
-    Mockito.when(consumer.position(ArgumentMatchers.any(TopicPartition.class)))
-           .thenThrow(new NoOffsetForPartitionException(Collections.singleton(topicPartition)));
-    Mockito.when(consumer.beginningOffsets(ArgumentMatchers.<TopicPartition>anyCollection()))
-           .thenReturn(Map.of(topicPartition, 0L));
+    EasyMock.expect(consumer.position(EasyMock.anyObject(TopicPartition.class)))
+            .andThrow(new NoOffsetForPartitionException(Collections.singleton(topicPartition)));
+    EasyMock.expect(consumer.beginningOffsets(EasyMock.anyObject()))
+            .andReturn(Map.of(topicPartition, 0L));
+    EasyMock.replay(consumer);
 
     KafkaRecordSupplier recordSupplier = new KafkaRecordSupplier(consumer, false);
 
     Assert.assertTrue(recordSupplier.isOffsetAvailable(streamPartition, KafkaSequenceNumber.of(5L)));
+    EasyMock.verify(consumer);
   }
 
   @Test
   public void testGetEarliestSequenceNumberRetriesOnTransientFailure()
   {
-    KafkaConsumer<byte[], byte[]> consumer = Mockito.mock(KafkaConsumer.class);
+    KafkaConsumer<byte[], byte[]> consumer = EasyMock.createMock(KafkaConsumer.class);
     StreamPartition<KafkaTopicPartition> streamPartition = StreamPartition.of(TOPIC, PARTITION_0);
     TopicPartition topicPartition = streamPartition.getPartitionId().asTopicPartition(streamPartition.getStream());
 
-    Mockito.when(consumer.beginningOffsets(ArgumentMatchers.<TopicPartition>anyCollection()))
-           .thenThrow(new TimeoutException("transient"))
-           .thenReturn(Map.of(topicPartition, 13L));
+    EasyMock.expect(consumer.beginningOffsets(EasyMock.anyObject()))
+            .andThrow(new TimeoutException("transient"))
+            .andReturn(Map.of(topicPartition, 13L));
+    EasyMock.replay(consumer);
 
     KafkaRecordSupplier recordSupplier = new KafkaRecordSupplier(consumer, false);
 
     Assert.assertEquals(Long.valueOf(13), recordSupplier.getEarliestSequenceNumber(streamPartition));
+    EasyMock.verify(consumer);
   }
 
   @Test
