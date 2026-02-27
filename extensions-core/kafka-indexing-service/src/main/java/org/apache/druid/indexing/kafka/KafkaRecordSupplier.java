@@ -34,6 +34,7 @@ import org.apache.druid.indexing.seekablestream.common.RecordSupplier;
 import org.apache.druid.indexing.seekablestream.common.StreamException;
 import org.apache.druid.indexing.seekablestream.common.StreamPartition;
 import org.apache.druid.indexing.seekablestream.extension.KafkaConfigOverrides;
+import org.apache.druid.java.util.common.RetryUtils;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.metrics.Monitor;
 import org.apache.druid.metadata.DynamicConfigProvider;
@@ -42,6 +43,7 @@ import org.apache.druid.utils.CollectionUtils;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.PartitionInfo;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.Deserializer;
 
@@ -188,21 +190,27 @@ public class KafkaRecordSupplier implements RecordSupplier<KafkaTopicPartition, 
   @Override
   public Long getLatestSequenceNumber(StreamPartition<KafkaTopicPartition> partition)
   {
-    Long currPos = getPosition(partition);
-    seekToLatest(Collections.singleton(partition));
-    Long nextPos = getPosition(partition);
-    seek(partition, currPos);
-    return nextPos;
+    return wrapExceptions(() -> {
+      TopicPartition tp = partition.getPartitionId().asTopicPartition(partition.getStream());
+      return RetryUtils.retry(
+          () -> consumer.endOffsets(Collections.singleton(tp)).get(tp),
+          e -> true,
+          RetryUtils.DEFAULT_MAX_TRIES
+      );
+    });
   }
 
   @Override
   public Long getEarliestSequenceNumber(StreamPartition<KafkaTopicPartition> partition)
   {
-    Long currPos = getPosition(partition);
-    seekToEarliest(Collections.singleton(partition));
-    Long nextPos = getPosition(partition);
-    seek(partition, currPos);
-    return nextPos;
+    return wrapExceptions(() -> {
+      TopicPartition tp = partition.getPartitionId().asTopicPartition(partition.getStream());
+      return RetryUtils.retry(
+          () -> consumer.beginningOffsets(Collections.singleton(tp)).get(tp),
+          e -> true,
+          RetryUtils.DEFAULT_MAX_TRIES
+      );
+    });
   }
 
   @Override
@@ -213,6 +221,15 @@ public class KafkaRecordSupplier implements RecordSupplier<KafkaTopicPartition, 
            && offset.isAvailableWithEarliest(KafkaSequenceNumber.of(earliestOffset));
   }
 
+  /**
+   * Returns the current position of the consumer for the given partition.
+   *
+   * <p>WARNING: This method calls {@code consumer.position()} which requires a valid
+   * committed offset or {@code auto.offset.reset} != none. During Kafka leader elections,
+   * this can throw {@code NoOffsetForPartitionException}. Prefer using
+   * {@link #getEarliestSequenceNumber} or {@link #getLatestSequenceNumber} which use
+   * stateless metadata APIs ({@code beginningOffsets}/{@code endOffsets}).
+   */
   @Override
   public Long getPosition(StreamPartition<KafkaTopicPartition> partition)
   {
