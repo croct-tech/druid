@@ -1,0 +1,458 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# ============================================================================
+# Apache Druid — GraalVM Native Image Build
+# ============================================================================
+#
+# Produces a Docker image containing a single GraalVM native binary of Druid
+# with selected extensions baked into the classpath.  Extensions are discovered
+# via ServiceLoader (ExtensionsConfig.searchCurrentClassloader=true) instead of
+# being dynamically loaded from filesystem directories at runtime.
+#
+# Build:
+#   DOCKER_BUILDKIT=1 docker build -f distribution/docker/Dockerfile.graalvm \
+#       -t apache/druid:graalvm .
+#
+# Run (example — broker):
+#   docker run --rm apache/druid:graalvm broker
+#
+# ============================================================================
+
+ARG NATIVE_IMAGE_XMX=16g
+
+# ---------------------------------------------------------------------------
+# Stage 1  —  Build Druid from source
+# ---------------------------------------------------------------------------
+# Pinned to linux/amd64: the web-console npm build has arm64 issues (GH-13012).
+# Output is Java bytecode (JARs) so the platform constraint is harmless.
+FROM --platform=linux/amd64 maven:3.9.9-eclipse-temurin-17 AS builder
+
+RUN export DEBIAN_FRONTEND=noninteractive \
+    && apt-get -qq update \
+    && apt-get -qq -y install --no-install-recommends python3 python3-yaml \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /src
+WORKDIR /src
+
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B -ff -q install \
+      -Pdist,bundle-contrib-exts \
+      -Pskip-static-checks,skip-tests \
+      -Dmaven.javadoc.skip=true \
+      -T1C
+
+# Dynamically resolve the version from the POM and extract the tarball.
+RUN --mount=type=cache,target=/root/.m2 \
+    VERSION=$(mvn -B -q org.apache.maven.plugins:maven-help-plugin:3.2.0:evaluate \
+      -Dexpression=project.version -DforceStdout=true) \
+    && tarball="distribution/target/apache-druid-${VERSION}-bin.tar.gz" \
+    && echo "Druid version: ${VERSION}" \
+    && test -f "${tarball}" \
+    && tar -zxf "${tarball}" -C /opt \
+    && mv "/opt/apache-druid-${VERSION}" /opt/druid
+
+# Sanity-check the distribution layout
+RUN test -d /opt/druid/lib \
+    && test -d /opt/druid/extensions \
+    && test -d /opt/druid/conf \
+    && test -d /opt/druid/bin
+
+# ---------------------------------------------------------------------------
+# Stage 2  —  Collect and flatten JARs for selected extensions
+# ---------------------------------------------------------------------------
+FROM amazoncorretto:17 AS jar-collector
+
+COPY --from=builder /opt/druid /opt/druid
+
+RUN mkdir -p /opt/druid-native/lib /opt/druid-native/bin /opt/druid-native/conf
+
+# 1) Core library JARs (includes the web-console JAR which serves static UI assets)
+RUN cp /opt/druid/lib/*.jar /opt/druid-native/lib/
+
+# 2) Extension JARs — one directory per extension under /opt/druid/extensions/.
+#    cp -n (no-clobber) keeps the core-lib version when names collide.
+#    The extension directory names match the Maven artifactIds produced by
+#    the dist & bundle-contrib-exts profiles.
+RUN set -e; \
+    EXTENSIONS=" \
+      druid-basic-security \
+      postgresql-metadata-storage \
+      druid-google-extensions \
+      druid-pac4j \
+      druid-kafka-indexing-service \
+      druid-lookups-cached-global \
+      druid-avro-extensions \
+      druid-datasketches \
+      druid-moving-average-query \
+      druid-time-min-max \
+      druid-stats \
+      druid-kubernetes-overlord-extensions \
+      prometheus-emitter \
+    "; \
+    for ext in $EXTENSIONS; do \
+      ext_dir="/opt/druid/extensions/${ext}"; \
+      if [ -d "$ext_dir" ]; then \
+        echo "Collecting extension: ${ext}"; \
+        cp -n "$ext_dir"/*.jar /opt/druid-native/lib/ 2>/dev/null || true; \
+      else \
+        echo "ERROR: Extension directory not found: ${ext_dir}" >&2; \
+        exit 1; \
+      fi; \
+    done
+
+# 3) Deduplicate: cp -n already kept the core-lib copy on name collision.
+#    Remove any empty files that may have appeared.
+RUN find /opt/druid-native/lib -empty -delete 2>/dev/null; \
+    echo "JAR count after collection: $(ls /opt/druid-native/lib/*.jar | wc -l)"
+
+# 4) Configuration and helper scripts
+RUN cp -a /opt/druid/conf/* /opt/druid-native/conf/ \
+    && cp -a /opt/druid/bin /opt/druid-native/bin
+
+# ---------------------------------------------------------------------------
+# Stage 3  —  Build the GraalVM native image
+# ---------------------------------------------------------------------------
+FROM ghcr.io/graalvm/native-image-community:17 AS native-builder
+
+ARG NATIVE_IMAGE_XMX
+
+# findutils for `find … -exec`, unzip for reading META-INF/services from JARs
+RUN microdnf install -y findutils zip unzip && microdnf clean all
+
+COPY --from=jar-collector /opt/druid-native /opt/druid-native
+WORKDIR /opt/druid-native
+
+# Verify native-image is available
+RUN native-image --version
+
+# ---- Tracing agent runs ----------------------------------------------------
+# Run multiple code-paths with the native-image agent to discover reflection,
+# resource, JNI, proxy, and serialization metadata.
+
+# Run 1: 'help' — exercises Airline CLI registration + ServiceLoader discovery
+RUN java \
+      -agentlib:native-image-agent=config-output-dir=/tmp/ni-config \
+      -Ddruid.extensions.loadList='[]' \
+      -Ddruid.extensions.directory=/nonexistent \
+      -cp 'lib/*' \
+      org.apache.druid.cli.Main help \
+    || true
+
+# Run 2: 'version' — merges into existing config
+RUN java \
+      -agentlib:native-image-agent=config-merge-dir=/tmp/ni-config \
+      -Ddruid.extensions.loadList='[]' \
+      -Ddruid.extensions.directory=/nonexistent \
+      -cp 'lib/*' \
+      org.apache.druid.cli.Main version \
+    || true
+
+# Run 3: attempt broker startup — will fail (no ZK / metadata DB) but traces
+#         Guice injection, Jackson type registration, and server bootstrap.
+RUN mkdir -p /tmp/conf-trace \
+    && printf '%s\n' \
+      'druid.extensions.loadList=[]' \
+      'druid.extensions.directory=/nonexistent' \
+      'druid.zk.service.host=localhost' \
+      'druid.metadata.storage.type=derby' \
+      'druid.metadata.storage.connector.connectURI=jdbc:derby:memory:druid;create=true' \
+      'druid.storage.type=local' \
+      'druid.storage.storageDirectory=/tmp/druid-segments' \
+      'druid.indexer.logs.type=file' \
+      'druid.indexer.logs.directory=/tmp/druid-indexing-logs' \
+      'druid.plaintextPort=18082' \
+      'druid.startup.logging.logProperties=false' \
+    > /tmp/conf-trace/common.runtime.properties \
+    && printf '%s\n' \
+      'druid.service=druid/broker' \
+      'druid.broker.http.numConnections=2' \
+      'druid.server.http.numThreads=2' \
+      'druid.processing.buffer.sizeBytes=25000000' \
+      'druid.processing.numMergeBuffers=1' \
+      'druid.processing.numThreads=1' \
+    > /tmp/conf-trace/runtime.properties \
+    && timeout 45 java \
+      -agentlib:native-image-agent=config-merge-dir=/tmp/ni-config \
+      -Ddruid.extensions.loadList='[]' \
+      -Ddruid.extensions.directory=/nonexistent \
+      -cp '/tmp/conf-trace:lib/*' \
+      org.apache.druid.cli.Main server broker \
+    || true
+
+# Run 4: attempt coordinator startup — exercises different Guice modules
+RUN printf '%s\n' \
+      'druid.service=druid/coordinator' \
+      'druid.coordinator.period=PT60S' \
+      'druid.coordinator.startDelay=PT5S' \
+    > /tmp/conf-trace/runtime.properties \
+    && timeout 45 java \
+      -agentlib:native-image-agent=config-merge-dir=/tmp/ni-config \
+      -Ddruid.extensions.loadList='[]' \
+      -Ddruid.extensions.directory=/nonexistent \
+      -cp '/tmp/conf-trace:lib/*' \
+      org.apache.druid.cli.Main server coordinator \
+    || true
+
+# ---- Augment agent-generated configs with ServiceLoader metadata -----------
+# The short-lived traces can't cover every runtime path.  Scan META-INF/services
+# files inside every JAR and ensure all provider classes have reflection entries.
+# Pure bash + jar/unzip — no python dependency.
+# Write the augment script as a RUN heredoc — avoids COPY heredoc compat issues
+RUN cat > /tmp/augment-reflect.sh <<'AUGMENT_EOF'
+#!/bin/bash
+set -e
+REFLECT="$1"
+LIB_DIR="$2"
+
+# Collect all class names from META-INF/services files inside all JARs.
+# Filter to valid Java FQCNs only (letters, digits, dots, dollar signs).
+SVC_CLASSES=$(mktemp)
+for jar in "$LIB_DIR"/*.jar; do
+  jar tf "$jar" 2>/dev/null \
+    | grep '^META-INF/services/' \
+    | while read -r svc; do
+        unzip -p "$jar" "$svc" 2>/dev/null \
+          | tr -d '\r' \
+          | grep -v '^\s*#' \
+          | grep -v '^\s*$' \
+          | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+          | grep -E '^[a-zA-Z_][a-zA-Z0-9_.$]*$' \
+          || true
+      done
+done | sort -u > "$SVC_CLASSES"
+echo "Service provider classes found: $(wc -l < "$SVC_CLASSES")"
+
+# Build a new JSON array combining existing entries + new service classes
+MERGED=$(mktemp)
+echo '[' > "$MERGED"
+first=true
+
+# Copy existing entries (strip outer brackets)
+if [ -s "$REFLECT" ]; then
+  content=$(sed '1s/^\[//; $s/\]$//' "$REFLECT" | sed '/^[[:space:]]*$/d')
+  if [ -n "$content" ]; then
+    printf '%s' "$content" >> "$MERGED"
+    first=false
+  fi
+fi
+
+# Add new entries for service classes not already present
+added=0
+while IFS= read -r cls; do
+  [ -z "$cls" ] && continue
+  if grep -qF "\"$cls\"" "$REFLECT" 2>/dev/null; then
+    continue
+  fi
+  if [ "$first" = true ]; then
+    first=false
+    printf '\n' >> "$MERGED"
+  else
+    printf ',\n' >> "$MERGED"
+  fi
+  printf '  {"name":"%s","allDeclaredConstructors":true,"allPublicConstructors":true,"allDeclaredMethods":true,"allPublicMethods":true,"allDeclaredFields":true,"allPublicFields":true}' "$cls" >> "$MERGED"
+  added=$((added + 1))
+done < "$SVC_CLASSES"
+
+printf '\n]\n' >> "$MERGED"
+mv "$MERGED" "$REFLECT"
+rm -f "$SVC_CLASSES"
+echo "Added $added service classes to reflect-config.json"
+AUGMENT_EOF
+RUN chmod +x /tmp/augment-reflect.sh \
+    && /tmp/augment-reflect.sh /tmp/ni-config/reflect-config.json /opt/druid-native/lib
+
+# ---- Add Guice-injected classes that the tracing agent may have missed.
+#      Guice uses reflection to call configure(Injector) on @Inject-annotated methods.
+#      Scan Druid JARs for all classes implementing configure(Injector) patterns.
+RUN REFLECT=/tmp/ni-config/reflect-config.json && \
+    TMPFILE=$(mktemp) && \
+    for jar in lib/*.jar; do \
+      jar tf "$jar" 2>/dev/null | grep '\.class$' | sed 's|/|.|g;s|\.class$||' \
+      | grep -E '^org\.apache\.druid\.' || true; \
+    done | sort -u > "$TMPFILE" && \
+    # Remove trailing ] from JSON
+    sed -i '$ s/\]$//' "$REFLECT" && \
+    # Add all org.apache.druid classes for full reflection access
+    while IFS= read -r cls; do \
+      [ -z "$cls" ] && continue; \
+      if ! grep -qF "\"$cls\"" "$REFLECT" 2>/dev/null; then \
+        printf ',\n  {"name":"%s","allDeclaredConstructors":true,"allPublicConstructors":true,"allDeclaredMethods":true,"allPublicMethods":true,"allDeclaredFields":true,"allPublicFields":true}' "$cls" >> "$REFLECT"; \
+      fi; \
+    done < "$TMPFILE" && \
+    printf '\n]\n' >> "$REFLECT" && \
+    rm -f "$TMPFILE" && \
+    echo "Added Druid classes to reflect-config.json" && \
+    # Upgrade all "queryAll*" to include full access (agent may emit query-only)
+    sed -i \
+      -e 's/"queryAllDeclaredMethods"\s*:\s*true/"allDeclaredMethods":true/g' \
+      -e 's/"queryAllPublicMethods"\s*:\s*true/"allPublicMethods":true/g' \
+      -e 's/"queryAllDeclaredConstructors"\s*:\s*true/"allDeclaredConstructors":true/g' \
+      -e 's/"queryAllPublicConstructors"\s*:\s*true/"allPublicConstructors":true/g' \
+      "$REFLECT" && \
+    echo "Upgraded query-only reflection to full access"
+
+# ---- Merge supplemental reflection entries for third-party classes the tracing
+#      agent misses (Guice-created, Class.forName, etc.)
+RUN REFLECT=/tmp/ni-config/reflect-config.json && \
+    sed -i '$ s/\]$//' "$REFLECT" && \
+    cat >> "$REFLECT" <<'EREFLECT'
+,
+  {"name":"net.jpountz.lz4.LZ4JavaSafeCompressor","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.lz4.LZ4JavaSafeSafeDecompressor","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.lz4.LZ4JavaSafeFastDecompressor","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.lz4.LZ4JavaUnsafeCompressor","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.lz4.LZ4JavaUnsafeSafeDecompressor","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.lz4.LZ4JavaUnsafeFastDecompressor","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.lz4.LZ4HCJavaSafeCompressor","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.lz4.LZ4HCJavaUnsafeCompressor","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.xxhash.XXHash32JavaSafe","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.xxhash.XXHash32JavaUnsafe","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.xxhash.XXHash64JavaSafe","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.xxhash.XXHash64JavaUnsafe","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.lz4.LZ4Factory","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true},
+  {"name":"net.jpountz.xxhash.XXHashFactory","allDeclaredConstructors":true,"allDeclaredMethods":true,"allDeclaredFields":true,"allPublicFields":true}
+]
+EREFLECT
+
+# Ensure resource-config.json covers all META-INF resources, properties, xml,
+# and static web-console assets.
+RUN cat > /tmp/ni-config/resource-config.json <<'REOF'
+{
+  "resources": {
+    "includes": [
+      {"pattern": "META-INF/services/.*"},
+      {"pattern": "META-INF/.*"},
+      {"pattern": ".*\\.properties"},
+      {"pattern": ".*\\.xml"},
+      {"pattern": ".*\\.json"},
+      {"pattern": ".*\\.html"},
+      {"pattern": ".*\\.js"},
+      {"pattern": ".*\\.css"},
+      {"pattern": ".*\\.png"},
+      {"pattern": ".*\\.svg"},
+      {"pattern": ".*\\.ico"},
+      {"pattern": ".*\\.map"},
+      {"pattern": ".*\\.txt"},
+      {"pattern": "org/joda/time/tz/data/.*"},
+      {"pattern": "org/joda/time/tz/.*"}
+    ]
+  },
+  "bundles": []
+}
+REOF
+
+# ---- Strip embedded native-image configs that conflict with our init strategy.
+#      1. Non-netty JARs (gax-grpc, grpc-netty-shaded, etc.) that may declare
+#         conflicting init rules.
+#      2. netty-codec-http and netty-codec-http2 — these declare an overly broad
+#         "--initialize-at-build-time=io.netty" which conflicts with targeted
+#         run-time init in netty-common and netty-buffer.
+RUN for jar in lib/*.jar; do \
+      bn="$(basename "$jar")"; \
+      case "$bn" in \
+        netty-codec-http-*|netty-codec-http2-*) \
+          zip -d "$jar" 'META-INF/native-image/*' 2>/dev/null || true ;; \
+        netty-*) ;; \
+        *) jar tf "$jar" 2>/dev/null | grep -q '^META-INF/native-image/' \
+           && zip -d "$jar" 'META-INF/native-image/*' 2>/dev/null || true ;; \
+      esac; \
+    done
+
+# ---- Remove GraalVM / Truffle / SVM jars that conflict with native-image builder.
+#      These ship classes already present in the builder JDK modules (jrt:/org.graalvm.*)
+#      and cause "Class is part of the image builder itself" or module access errors.
+#      Druid bundles these for its JavaScript eval support (which is not needed in native).
+RUN rm -vf lib/graal-sdk-*.jar \
+           lib/svm-*.jar \
+           lib/nativeimage-*.jar \
+           lib/truffle-*.jar \
+           lib/graalvm-*.jar \
+           lib/compiler-*.jar \
+           lib/js-*.jar \
+           lib/js-scriptengine-*.jar \
+           lib/icu4j-*.jar \
+           lib/regex-*.jar \
+           lib/derby-*.jar \
+           lib/derbyshared-*.jar \
+           lib/derbytools-*.jar \
+           lib/derbyclient-*.jar \
+    2>/dev/null || true
+
+# ---- Native image compilation -----------------------------------------------
+RUN native-image \
+      -cp 'lib/*' \
+      -o druid \
+      -H:Path=/opt/druid-native/bin \
+      -H:Name=druid \
+      -H:ConfigurationFileDirectories=/tmp/ni-config \
+      -H:+ReportExceptionStackTraces \
+      --no-fallback \
+      --enable-url-protocols=http,https \
+      --install-exit-handlers \
+      -H:+AddAllCharsets \
+      --initialize-at-build-time=org.jcodings \
+      --initialize-at-run-time=org.apache.hadoop.io.erasurecode \
+      -Ddruid.extensions.loadList='[]' \
+      -Ddruid.extensions.directory=/nonexistent \
+      -J-Xmx${NATIVE_IMAGE_XMX} \
+      org.apache.druid.cli.Main
+
+# Smoke-test the binary
+RUN ls -la /opt/druid-native/bin/druid
+RUN /opt/druid-native/bin/druid help 2>&1; echo "EXIT CODE: $?"
+RUN /opt/druid-native/bin/druid version 2>&1; echo "EXIT CODE: $?"
+
+# ---------------------------------------------------------------------------
+# Stage 4  —  Minimal runtime image
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim AS runtime
+
+RUN groupadd -g 1000 druid \
+    && useradd -u 1000 -g druid -d /opt/druid -M -s /usr/sbin/nologin druid
+
+# Native binary needs glibc, libz, libstdc++, and basic CLI tools.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         zlib1g \
+         libstdc++6 \
+         procps \
+         tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Binary
+COPY --from=native-builder /opt/druid-native/bin/druid /opt/druid/bin/druid
+
+# Configuration
+COPY --from=jar-collector /opt/druid-native/conf /opt/druid/conf
+
+# Entrypoint script
+COPY distribution/docker/druid-graalvm.sh /druid.sh
+
+RUN chmod 755 /opt/druid/bin/druid /druid.sh \
+    && mkdir -p /opt/druid/var /opt/shared \
+    && chown -R druid:druid /opt/druid /opt/shared \
+    && chmod 775 /opt/druid/var /opt/shared
+
+USER druid
+VOLUME /opt/druid/var
+WORKDIR /opt/druid
+
+ENTRYPOINT ["/druid.sh"]
