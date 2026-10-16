@@ -1,150 +1,148 @@
-# APACHE DRUID — PROJECT KNOWLEDGE BASE
+<!--
+  ~ Licensed to the Apache Software Foundation (ASF) under one
+  ~ or more contributor license agreements.  See the NOTICE file
+  ~ distributed with this work for additional information
+  ~ regarding copyright ownership.  The ASF licenses this file
+  ~ to you under the Apache License, Version 2.0 (the
+  ~ "License"); you may not use this file except in compliance
+  ~ with the License.  You may obtain a copy of the License at
+  ~
+  ~   http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing,
+  ~ software distributed under the License is distributed on an
+  ~ "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  ~ KIND, either express or implied.  See the License for the
+  ~ specific language governing permissions and limitations
+  ~ under the License.
+  -->
 
-**Generated:** 2025-02-13 | **Commit:** e3b8e7cb66 | **Branch:** fix-stream-disconnect
 
-## OVERVIEW
+# Apache Druid
 
-Apache Druid — high-performance real-time analytics database. Java 17/21 Maven monorepo with ~9K Java files, ~340K source lines. Guice DI throughout. Extension-heavy plugin architecture.
+Real-time analytics database. Java, Maven, multi-module project.
 
-## STRUCTURE
+## Fork Policy
 
+This repo is `croct-tech/druid` (`origin`), a fork of `apache/druid` (`upstream`). These rules override anything
+below that assumes you are working on upstream.
+
+- **Issues are local files.** Never create GitHub Issues on either remote. See `docs/agents/issue-tracker.md`.
+- **PRs target `origin`.** Never open pull requests against `apache/druid`.
+- **Code and build changes need an ADR.** A code or build change that diverges from upstream must add or update an ADR
+  in `docs/adr/` in the same PR. Its `Upstream:` field is `fork-only`, `pending <link>`, or `merged <link>`. Docs and
+  process changes don't need one.
+- **Upstream syncs are merge commits.** An automated agent merges `upstream/master` into `master` weekly. Never rebase
+  or rewrite published history. Leave other branches (e.g. `graalvm`) alone.
+- **Resolving sync conflicts.** Preserve the behaviour of every `accepted` ADR whose `Upstream:` is not `merged`; if
+  upstream rewrote the code, re-apply the ADR's intent. If you can't resolve a conflict with confidence, stop and ask a
+  maintainer to resolve it. Never commit a partial merge, and never drop a fork patch or defer the merge to a ticket
+  unless a maintainer decides so.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as local markdown files under `.scratch/`, not GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+
+## Key Modules
+
+- `processing/`: Core query processing, aggregation, data structures
+- `server/`: Common server functionality, HTTP services
+- `sql/`: SQL planning (Calcite), SQL-to-native translation
+- `indexing-service/`: Task framework, ingestion coordination
+- `multi-stage-query/`: MSQ engine
+- `extensions-core/`: Core extensions (S3, Kafka, Kinesis, Parquet, DataSketches, etc.)
+- `web-console/`: React/TypeScript management UI
+- `quidem-ut/`: SQL query testing framework
+
+## Code Style
+
+- Read `dev/style-conventions.md` for conventions.
+- Forbidden APIs: `codestyle/druid-forbidden-apis.txt`.
+- **Always use `final`** for fields and variables that are not reassigned.
+- End every file with a newline.
+- Don't format changes unnecessarily.
+
+## Testing
+
+### JUnit 5 test helpers
+
+When adding or migrating tests, reuse these existing test-scope helpers:
+
+- `TemporaryFolderExtension` (`org.apache.druid.testing`) for tests that need a Druid-managed `File` temporary directory:
+
+  ```java
+  @RegisterExtension
+  public final TemporaryFolderExtension temporaryFolder = TemporaryFolderExtension.testCaseScoped();
+  ```
+
+  Use `getRoot()`, `newFolder(...)`, or `newFile(...)`. Prefer `TemporaryFolderExtension` when Druid-specific temporary-directory behavior or helper methods are needed; use JUnit 5 `@TempDir` when a plain temporary root is sufficient.
+
+- `LoggerCaptureExtension` (`org.apache.druid.testing.junit`) for capturing Log4j events. Register it with the target class and use `getLogEvents()`, `clearLogEvents()`, or `awaitLogEvents()` as needed.
+
+## Pull Requests
+
+- Before opening a PR, self-review the complete diff against the target branch. Verify that every change is intentional and in scope, check for correctness and regressions, and run the relevant tests or checks.
+- PR titles targeting `master` must use the Conventional Commits format: `<type>: <description>` or `<type>(<scope>): <description>`.
+- For a breaking change, add `!` immediately before the colon: `<type>!: <description>` or `<type>(<scope>)!: <description>`. A breaking change is backward-incompatible and may require users to update existing code, configuration, or integrations.
+- Accepted types are `backport`, `build`, `ci`, `dev`, `docs`, `feat`, `fix`, `minor`, `perf`, `refactor`, `release`, `revert`, `style`, and `test`.
+- Example: `build: remove redundant license download step`.
+- Follow `.github/pull_request_template.md` when preparing the PR description.
+
+## Running Tests
+
+Use these flags for faster tests: `-Pskip-static-checks -Dweb.console.skip=true -T1C`
+
+**Single test method:**
 ```
-druid/
-├── processing/         # Core engine: queries, segments, expressions, data input (2496 main files)
-├── server/             # Cluster mgmt: coordination, discovery, HTTP, metadata (855 main)
-├── sql/                # SQL layer: Calcite integration, planning, native conversion (376 main)
-├── indexing-service/   # Ingestion: task mgmt, streaming/batch supervisors (406 main)
-├── multi-stage-query/  # MSQ: distributed DAG execution engine (440 main)
-├── services/           # CLI entry point: org.apache.druid.cli.Main (58 main)
-├── web-console/        # React/TypeScript management UI (Blueprint.js, Zustand)
-├── extensions-core/    # 30 official plugins: S3, Kafka, DataSketches, security, etc.
-├── extensions-contrib/ # 35 community plugins: Prometheus, Redis, Delta Lake, etc.
-├── embedded-tests/     # Cross-module integration tests
-├── benchmarks/         # JMH performance benchmarks
-├── indexing-hadoop/    # Legacy Hadoop ingestion (maintenance only)
-├── docs/               # Docusaurus 3 documentation (published to druid.apache.org)
-├── integration-tests/  # Docker-based TestNG integration tests
-├── integration-tests-ex/ # Extended/revised integration test suite
-├── codestyle/          # Checkstyle, PMD, forbidden-apis, SpotBugs configs
-├── dev/                # Developer tools: style guide, IDE configs, scripts
-└── distribution/       # Release packaging and assembly
-```
-
-## WHERE TO LOOK
-
-| Task | Location | Notes |
-|------|----------|-------|
-| Entry point (all processes) | `services/.../cli/Main.java` | Airline CLI: `server coordinator`, `server broker`, etc. |
-| Add a query type | `processing/.../query/` | Implement `Query<T>` + `QueryToolChest` + `QueryRunnerFactory` |
-| Add an aggregation | `processing/.../query/aggregation/` | Implement `AggregatorFactory` + `BufferAggregator` |
-| Add a SQL function | `sql/.../expression/builtin/` | Implement `SqlOperatorConversion` |
-| Add an expression function | `processing/.../math/expr/Function.java` | Add inner class implementing `Function` |
-| Add a new extension | `extensions-core/` or `extensions-contrib/` | Implement `DruidModule`, register via SPI in `META-INF/services/` |
-| Add ingestion source | `processing/.../data/input/` | Implement `InputSource` + `InputFormat` |
-| Segment internals | `processing/.../segment/` | `Segment`, `CursorFactory`, `QueryableIndex`, `Cursor` |
-| MSQ execution | `multi-stage-query/.../msq/exec/` | `ControllerImpl`, `WorkerImpl` |
-| SQL planning | `sql/.../calcite/planner/DruidPlanner.java` | Parse → validate → plan → convert |
-| Web console | `web-console/src/views/` | Blueprint.js views, Zustand stores |
-| Build configs | `codestyle/` | `checkstyle.xml`, `druid-forbidden-apis.txt`, `pmd-ruleset.xml` |
-| CI workflows | `.github/workflows/` | `unit-and-integration-tests-unified.yml` is main entry |
-
-## CONVENTIONS
-
-### Java Style (Checkstyle-enforced)
-- **Braces**: Classes/methods → opening brace on **new line**. Control flow (`if`/`for`/`try`) → **end of line**
-- **Indent**: 2 spaces, no tabs
-- **Imports**: No star imports, no static imports. Order: `*`, then `javax`, then `java` (separated)
-- **No `@author` tags** in Javadoc — Checkstyle rejects them
-- **Comments on classes/methods must be Javadoc** (`/** */`), not block comments (`/* */`)
-- **Method names**: `camelCase` starting lowercase. Variables same
-- **Constants**: `UPPER_SNAKE_CASE` (exception: `log`/`logger`)
-- **Packages**: Must be under `org.apache.druid.*`
-
-### Logging (see `dev/style-conventions.md`)
-- Interpolated values MUST use `[value]` format: `"Filter [%s] on column [%s] cannot be applied to type [%s]"`
-- Messages must read as sentences even with interpolations removed
-- INFO+ and Exceptions must NEVER leak secrets or data content
-
-### Forbidden APIs (`codestyle/druid-forbidden-apis.txt`)
-- Use `java.util.HashMap` directly, NOT `Maps.newHashMap()` (but use `Maps.newHashMapWithExpectedSize(int)` for sized)
-- Use `java.util.ArrayList` directly, NOT `Lists.newArrayList()`
-- Use `StandardCharsets`, NOT `Charsets`
-- Use `ThreadLocalRandom.current()`, NOT `new Random()` or `Math.random()`
-- Use `FileUtils.mkdirp()`, NOT `File.mkdirs()`
-- Use `Execs.multiThreaded()`, NOT `Executors.newFixedThreadPool()`
-- Use `JacksonUtils.writeObjectUsingSerializerProvider()`, NOT `ObjectMapper.writeValue(JsonGenerator,...)`
-- Use `primitive.class`, NOT `Wrapper.TYPE`
-- Use `String.startsWith()/endsWith()/contains()` or cached Pattern, NOT `String.matches()/replaceAll()`
-- No `LinkedList` — use `ArrayList` or `ArrayDeque`
-- No `Throwables.propagate()` in new code
-- No Powermock — use Mockito
-- `"string".equals(var)`, NOT `var.equals("string")`
-- `toArray(new Object[0])`, NOT `toArray(new Object[n])`
-
-### Checkstyle-specific Traps
-- Suppress inline: `// CHECKSTYLE.OFF: RuleName` / `// CHECKSTYLE.ON: RuleName`
-- `Float.MAX_VALUE` → use `Float.POSITIVE_INFINITY`
-- `Double.MAX_VALUE` → use `Double.POSITIVE_INFINITY`
-- `Ordering.natural().nullsFirst()` → use `Comparators.naturalNullsFirst()`
-- No IntelliJ-style `//  ` (double-space) commented code
-- No `instanceof` on `ObjectColumnSelector`/`LongColumnSelector`/`FloatColumnSelector`/`DoubleColumnSelector`
-
-### Multi-line Arguments
-If a method call/declaration doesn't fit one line (<120 cols), each argument goes on its own line. Exception: map-like pairs.
-
-## ANTI-PATTERNS (THIS PROJECT)
-
-- **Never `equals()`/`hashCode()` on `SegmentCreateRequest`** — each instance must be identity-unique
-- **Never use `TaskResourceFilter` at MiddleManager** — `TaskStorageQueryAdapter` can't be injected there
-- **Always cancel K8s watchers explicitly** — `cancelJobWatcher()`/`cancelPodWatcher()` or resource leak
-- **Never use Calcite `OperandTypes.LITERAL`** — throws on CAST literals. Use `DefaultOperandTypeChecker`
-- **Never use `datasketches-memory` `Memory.wrap(byte[],int,int,ByteOrder)`** — broken in v2.2.0
-- **Never use `EmbeddedMiddleManager`** in non-local tests — use `EmbeddedIndexer` instead
-
-## COMMANDS
-
-```bash
-# Full build
-mvn clean install -Pdist -DskipTests
-
-# Fast build (skip all checks)
-mvn clean install -Pdist -T1C -DskipTests -Dforbiddenapis.skip=true \
-  -Dcheckstyle.skip=true -Dpmd.skip=true -Dmaven.javadoc.skip=true -Denforcer.skip=true
-
-# Run unit tests
-mvn test
-
-# Run integration tests (Docker-based)
-./it.sh
-
-# Web console dev
-cd web-console && npm install && npm start   # proxies to localhost:8888
-cd web-console && npm run autofix            # lint + format
-
-# Install git hooks (checkstyle pre-commit)
-./hooks/install-hooks.sh
-
-# Build docs site
-cd website && npm install && npm start
+mvn test -pl sql -am -Dtest="org.apache.druid.sql.calcite.CalciteQueryTest#testFoo" -Dsurefire.failIfNoSpecifiedTests=false -Pskip-static-checks -Dweb.console.skip=true -T1C
 ```
 
-## TESTING
+**All tests in a package:**
+```
+mvn test -pl sql -am -Dtest="org.apache.druid.sql.**" -Dsurefire.failIfNoSpecifiedTests=false -Pskip-static-checks -Dweb.console.skip=true -T1C
+```
 
-- **Unit tests**: JUnit 4/5 (transitioning to 5), `*Test.java` suffix, `src/test/java/`
-- **Integration tests**: TestNG, `IT*.java` prefix, `integration-tests/` module, Docker-based via `./it.sh`
-- **SQL tests**: Quidem framework, `.iq` files in `sql/src/test/quidem/` and `quidem-ut/`
-- **Frontend tests**: Jest + snapshot tests, `npm test` in `web-console/`
-- **Mocking**: Mockito preferred (EasyMock legacy exists). No Powermock
-- **Coverage**: JaCoCo enforced. Use IntelliJ JaCoCo runner for branch coverage
+**Quidem (.iq) tests:**
 
-## NOTES
+To run `sql/src/test/quidem/org.apache.druid.quidem.SqlQuidemTest/numMerge.iq`:
 
-- JDK 17 or 21 required to build. IntelliJ SDK must be named `1.8` (alias only — see `dev/intellij-setup.md`)
-- `-Pdist` is required for first build — populates `distribution/target/extensions/`
-- `-Dweb.console.skip=true` saves significant build time for backend-only work
-- Calcite SQL parser is **forked into the project** (`dev/upgrade-calcite-parser`) — not a stock dependency
-- Dual integration test suites: `integration-tests/` (legacy) and `integration-tests-ex/` (newer)
-- DI is Google Guice everywhere. Extensions register via `DruidModule` → Guice `Multibinder`/`MapBinder`
-- Extension discovery uses Java SPI: `META-INF/services/org.apache.druid.initialization.DruidModule`
-- Jackson polymorphism via `@JsonTypeName` — extensions register subtypes in `getJacksonModules()`
-- `known-issues.md` files exist for MSQ, Window Functions, and Nested Columns — check before extending
+```
+mvn test -pl sql -am -Dtest="org.apache.druid.quidem.SqlQuidemTest" -Dquidem.filter=numMerge -Dsurefire.failIfNoSpecifiedTests=false -Pskip-static-checks -Dweb.console.skip=true -T1C
+```
+
+To run `quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/basics_group_by.all.iq`:
+
+```
+mvn test -pl quidem-ut -am -Dtest="org.apache.druid.quidem.QTest" -Dquidem.filter=qaWin/basics_group_by.all -Dsurefire.failIfNoSpecifiedTests=false -Pskip-static-checks -Dweb.console.skip=true -T1C
+```
+
+Always use `-Dquidem.filter` to avoid running the full suite. To run multiple tests, use commas like
+`-Dquidem.filter=file1,file2,file3` or use wildcards like `-Dquidem.filter=join*`. Include subdirectory names if
+present, such as `-Dquidem.filter=qaWin/**`.
+
+
+### Web Console Development
+
+Refer to `web-console/README.md` for general instructions on developing the web console.
+
+Run `npm run test-unit` from the `web-console/` directory to verify your work. Before doing this for the first time
+in a fresh checkout, you will also need to run `npm install`.
+
+Run `npm run autofix` from the `web-console/` directory to fix formatting issues.
+
+### Documentation
+
+- When updating Markdown tables in `docs/`, preserve the existing table formatting.
+- Use backquotes for any code references. e.g., `serverPriorityToReplicas`, `ioConfig`.
+- Run `npm run spellcheck` from the `website/` directory to verify doc updates and update the `.spelling` file if needed.
