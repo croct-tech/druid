@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: crocttech/druid
+  IMAGE: us-docker.pkg.dev/croct-assets/tools/druid
 
 jobs:
   release:
@@ -100,13 +100,7 @@ jobs:
           ./mvnw -B versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
           ./mvnw -B -T1C clean install -pl '!benchmarks' -Pdist,bundle-contrib-exts,skip-static-checks,skip-tests
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push the Docker image
+      - name: Build the Docker image
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -114,7 +108,6 @@ jobs:
             --build-arg BUILD_FROM_SOURCE=false \
             -t "$IMAGE:$VERSION" \
             -f distribution/docker/Dockerfile .
-          docker push "$IMAGE:$VERSION"
 
       # Authenticate only after the image is built: this writes a credentials file into the
       # workspace, which the Dockerfile copies into its builder stage.
@@ -126,6 +119,13 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v3
+
+      - name: Push the Docker image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gcloud auth configure-docker us-docker.pkg.dev --quiet
+          docker push "$IMAGE:$VERSION"
 
       - name: Report the new image
         env:
