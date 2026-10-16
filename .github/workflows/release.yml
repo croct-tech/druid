@@ -1,0 +1,139 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "Release"
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: us-docker.pkg.dev/croct-assets/tools/druid
+
+jobs:
+  release:
+    name: "Release"
+    # Release versions are only unique along master (docs/adr/0003-fork-release-versions.md).
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compute the release version
+        id: version
+        run: |
+          git fetch --quiet --no-tags https://github.com/apache/druid.git \
+            '+refs/heads/master:refs/remotes/upstream/master' \
+            '+refs/tags/druid-*:refs/tags/druid-*'
+
+          # Upstream tags each release on its release branch, never on master. A release is
+          # included once master contains the commit its release branch forked from.
+          for tag in $(git tag --list 'druid-*' --sort=-v:refname | grep -E '^druid-[0-9]+\.[0-9]+\.[0-9]+$'); do
+            if git merge-base --is-ancestor "$(git merge-base "$tag" upstream/master)" HEAD; then
+              release="${tag#druid-}"
+              break
+            fi
+          done
+          if [ -z "${release:-}" ]; then
+            echo "::error ::No upstream release is included in $GITHUB_SHA"
+            exit 1
+          fi
+
+          commits=$(git rev-list --count upstream/master..HEAD)
+          echo "Release version: $release-croct.$commits"
+          {
+            echo "version=$release-croct.$commits"
+            echo "release=$release"
+            echo "commits=$commits"
+            echo "upstream=$(git merge-base upstream/master HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE: ${{ steps.version.outputs.release }}
+          COMMITS: ${{ steps.version.outputs.commits }}
+          UPSTREAM: ${{ steps.version.outputs.upstream }}
+        run: |
+          # The version is derived from the commit, so an existing release is for this same
+          # commit, left behind by an earlier run that failed in a later step.
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "::notice ::Release $VERSION already exists, reusing it"
+          else
+            gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" \
+              --notes "Upstream \`master\` at apache/druid@$UPSTREAM (latest included release: $RELEASE) plus $COMMITS fork commits. Image: \`$IMAGE:$VERSION\`."
+          fi
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: 25
+          cache: 'maven'
+
+      - name: Build the Druid distribution
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        # Same build as the Docker tests, plus the web console, which they skip but the image ships.
+        run: |
+          ./mvnw -B versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+          ./mvnw -B -T1C clean install -pl '!benchmarks' -Pdist,bundle-contrib-exts,skip-static-checks,skip-tests
+
+      - name: Build the Docker image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          DOCKER_BUILDKIT=1 docker build \
+            --build-arg BUILD_FROM_SOURCE=false \
+            -t "$IMAGE:$VERSION" \
+            -f distribution/docker/Dockerfile .
+
+      # Authenticate only after the image is built: this writes a credentials file into the
+      # workspace, which the Dockerfile copies into its builder stage.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCLOUD_WORKLOAD_IDENTITY }}
+          service_account: ${{ secrets.GCLOUD_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Push the Docker image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gcloud auth configure-docker us-docker.pkg.dev --quiet
+          docker push "$IMAGE:$VERSION"
+
+      - name: Report the new image
+        env:
+          UPDATE_ENDPOINT: ${{ secrets.UPDATE_ENDPOINT }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          token=$(gcloud auth print-access-token)
+          curl --fail-with-body --silent --show-error -X POST "$UPDATE_ENDPOINT" \
+            -H "Authorization: Bearer $token" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n --arg image "$IMAGE" --arg version "$VERSION" '{image: $image, version: $version}')"
