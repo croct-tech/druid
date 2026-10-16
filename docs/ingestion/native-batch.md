@@ -24,10 +24,10 @@ sidebar_label: JSON-based batch
   -->
 
 :::info
- This page describes JSON-based batch ingestion using [ingestion specs](ingestion-spec.md). For SQL-based batch ingestion using the [`druid-multi-stage-query`](../multi-stage-query/index.md) extension, see [SQL-based ingestion](../multi-stage-query/index.md). Refer to the [ingestion methods](../ingestion/index.md#batch) table to determine which ingestion method is right for you.
+ This page describes JSON-based batch ingestion using [ingestion specs](ingestion-spec.md). For SQL-based batch ingestion using the [multi-stage query (MSQ) task engine](../multi-stage-query/index.md), see [SQL-based ingestion](../multi-stage-query/index.md). Refer to the [ingestion methods](../ingestion/index.md#batch) table to determine which ingestion method is right for you.
 :::
 
-Apache Druid supports the following types of JSON-based batch indexing tasks:
+Apache&circledR; Druid supports the following types of JSON-based batch indexing tasks:
 
 - Parallel task indexing (`index_parallel`) that can run multiple indexing tasks concurrently. Parallel task works well for production ingestion tasks.
 - Simple task indexing (`index`) that run a single indexing task at a time. Simple task indexing is suitable for development and test environments.
@@ -46,11 +46,11 @@ For related information on batch indexing, see:
 To run either kind of JSON-based batch indexing task, you can:
 
 - Use the **Load Data** UI in the web console to define and submit an ingestion spec.
-- Define an ingestion spec in JSON based upon the [examples](#parallel-indexing-example) and reference topics for batch indexing. Then POST the ingestion spec to the [Tasks API endpoint](../api-reference/tasks-api.md), `/druid/indexer/v1/task`, the Overlord service. Alternatively, you can use the indexing script included with Druid at `bin/post-index-task`.
+- Define an ingestion spec in JSON based upon the [examples](#parallel-indexing-example) and reference topics for batch indexing. Then POST the ingestion spec to the [Tasks API endpoint](../api-reference/tasks-api.md), `/druid/indexer/v1/task`, the Overlord service.
 
 ## Parallel task indexing
 
-The parallel task type `index_parallel` is a task for multi-threaded batch indexing. Parallel task indexing only relies on Druid resources. It doesn't depend on other external systems like Hadoop.
+The parallel task type `index_parallel` is a task for multi-threaded batch indexing.
 
 The `index_parallel` task is a supervisor task that orchestrates
 the whole indexing process. The supervisor task splits the input data and creates worker tasks to process the individual portions of data.
@@ -100,10 +100,6 @@ By default, JSON-based batch ingestion replaces all data in the intervals in you
 You can also perform concurrent append and replace tasks. For more information, see [Concurrent append and replace](./concurrent-append-replace.md)
 
 #### Fully replacing existing segments using tombstones
-
-:::info
-This feature is still experimental.
-:::
 
 You can set `dropExisting` flag in the `ioConfig` to true if you want the ingestion task to replace all existing segments that start and end within the intervals for your `granularitySpec`. This applies whether or not the new data covers all existing segments. `dropExisting` only applies when `appendToExisting` is false and the `granularitySpec` contains an `interval`.
 
@@ -247,7 +243,7 @@ The following table lists the properties of a `ioConfig` object:
 |`type`|The task type. Set to the value to `index_parallel`.|none|yes|
 |`inputFormat`|[`inputFormat`](./data-formats.md#input-format) to specify how to parse input data.|none|yes|
 |`appendToExisting`|Creates segments as additional shards of the latest version, effectively appending to the segment set instead of replacing it. This means that you can append new segments to any datasource regardless of its original partitioning scheme. You must use the `dynamic` partitioning type for the appended segments. If you specify a different partitioning type, the task fails with an error.|false|no|
-|`dropExisting`|If `true` and `appendToExisting` is `false` and the `granularitySpec` contains an`interval`, then the ingestion task replaces all existing segments fully contained by the specified `interval` when the task publishes new segments. If ingestion fails, Druid doesn't change any existing segments. In the case of misconfiguration where either `appendToExisting` is `true` or `interval` isn't specified in `granularitySpec`, Druid doesn't replace any segments even if `dropExisting` is `true`. WARNING: this feature is still experimental.|false|no|
+|`dropExisting`|If `true` and `appendToExisting` is `false` and the `granularitySpec` contains an`interval`, then the ingestion task replaces all existing segments fully contained by the specified `interval` when the task publishes new segments. If ingestion fails, Druid doesn't change any existing segments. In the case of misconfiguration where either `appendToExisting` is `true` or `interval` isn't specified in `granularitySpec`, Druid doesn't replace any segments even if `dropExisting` is `true`.|false|no|
 
 ### `tuningConfig`
 

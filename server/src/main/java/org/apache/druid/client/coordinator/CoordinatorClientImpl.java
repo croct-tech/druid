@@ -23,13 +23,15 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
+import io.netty.handler.codec.http.HttpMethod;
 import org.apache.druid.client.BootstrapSegmentsResponse;
 import org.apache.druid.client.ImmutableSegmentLoadInfo;
 import org.apache.druid.client.JsonParserIterator;
+import org.apache.druid.collections.ResourceHolder;
 import org.apache.druid.common.guava.FutureUtils;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.jackson.JacksonUtils;
-import org.apache.druid.java.util.common.parsers.CloseableIterator;
 import org.apache.druid.java.util.http.client.response.BytesFullResponseHandler;
 import org.apache.druid.java.util.http.client.response.BytesFullResponseHolder;
 import org.apache.druid.java.util.http.client.response.InputStreamResponseHandler;
@@ -37,18 +39,20 @@ import org.apache.druid.java.util.http.client.response.StringFullResponseHandler
 import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.lookup.LookupExtractorFactoryContainer;
 import org.apache.druid.query.lookup.LookupUtils;
+import org.apache.druid.rpc.HttpResponseException;
 import org.apache.druid.rpc.IgnoreHttpResponseHandler;
 import org.apache.druid.rpc.RequestBuilder;
 import org.apache.druid.rpc.ServiceClient;
 import org.apache.druid.rpc.ServiceRetryPolicy;
 import org.apache.druid.segment.metadata.DataSourceInformation;
+import org.apache.druid.server.broker.BrokerDynamicConfig;
 import org.apache.druid.server.compaction.CompactionStatusResponse;
 import org.apache.druid.server.coordination.LoadableDataSegment;
 import org.apache.druid.server.coordinator.CoordinatorDynamicConfig;
 import org.apache.druid.server.coordinator.rules.Rule;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.SegmentStatusInCluster;
-import org.jboss.netty.handler.codec.http.HttpMethod;
+import org.apache.druid.utils.CloseableUtils;
 import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
@@ -56,6 +60,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -254,6 +259,29 @@ public class CoordinatorClientImpl implements CoordinatorClient
   }
 
   @Override
+  public ListenableFuture<BrokerDynamicConfig> getBrokerDynamicConfig()
+  {
+    // Older coordinators may not support this endpoint; fall back to an empty config on 404.
+    return Futures.catching(
+        FutureUtils.transform(
+            client.asyncRequest(
+                new RequestBuilder(HttpMethod.GET, "/druid/coordinator/v1/broker/config"),
+                new BytesFullResponseHandler()
+            ),
+            holder -> JacksonUtils.readValue(jsonMapper, holder.getContent(), BrokerDynamicConfig.class)
+        ),
+        HttpResponseException.class,
+        e -> {
+          if (e != null && e.getResponse().getStatus().code() == 404) {
+            return BrokerDynamicConfig.builder().build();
+          }
+          throw new RuntimeException(e);
+        },
+        MoreExecutors.directExecutor()
+    );
+  }
+
+  @Override
   public ListenableFuture<Void> updateCoordinatorDynamicConfig(CoordinatorDynamicConfig dynamicConfig)
   {
     return client.asyncRequest(
@@ -295,7 +323,7 @@ public class CoordinatorClientImpl implements CoordinatorClient
   }
 
   @Override
-  public ListenableFuture<CloseableIterator<SegmentStatusInCluster>> fetchAllUsedSegmentsWithOvershadowedStatus(
+  public ListenableFuture<ResourceHolder<Iterator<SegmentStatusInCluster>>> fetchAllUsedSegmentsWithOvershadowedStatus(
       @Nullable Set<String> watchedDataSources,
       boolean includeRealtimeSegments
   )
@@ -320,11 +348,25 @@ public class CoordinatorClientImpl implements CoordinatorClient
             new InputStreamResponseHandler()
         ),
         inputStream -> {
-          return new JsonParserIterator<>(
+          final JsonParserIterator<SegmentStatusInCluster> segments = new JsonParserIterator<>(
               jsonMapper.getTypeFactory().constructType(SegmentStatusInCluster.class),
               Futures.immediateFuture(inputStream),
               jsonMapper
           );
+          return new ResourceHolder<Iterator<SegmentStatusInCluster>>()
+          {
+            @Override
+            public Iterator<SegmentStatusInCluster> get()
+            {
+              return segments;
+            }
+
+            @Override
+            public void close()
+            {
+              CloseableUtils.closeAndWrapExceptions(() -> CloseableUtils.closeAll(segments, inputStream));
+            }
+          };
         }
     );
   }

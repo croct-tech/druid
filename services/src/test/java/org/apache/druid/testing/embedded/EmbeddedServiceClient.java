@@ -33,10 +33,12 @@ import org.apache.druid.common.guava.FutureUtils;
 import org.apache.druid.discovery.NodeRole;
 import org.apache.druid.guice.annotations.EscalatedGlobal;
 import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.concurrent.ScheduledExecutors;
 import org.apache.druid.java.util.http.client.HttpClient;
 import org.apache.druid.java.util.http.client.response.StatusResponseHandler;
 import org.apache.druid.java.util.http.client.response.StatusResponseHolder;
+import org.apache.druid.query.http.ClientSqlQuery;
 import org.apache.druid.rpc.FixedServiceLocator;
 import org.apache.druid.rpc.RequestBuilder;
 import org.apache.druid.rpc.ServiceClient;
@@ -48,7 +50,7 @@ import org.apache.druid.rpc.StandardRetryPolicy;
 import org.apache.druid.rpc.guice.ServiceClientModule;
 import org.apache.druid.rpc.indexing.OverlordClient;
 import org.apache.druid.server.security.Escalator;
-import org.jboss.netty.handler.codec.http.HttpResponseStatus;
+import org.apache.druid.sql.http.ResultFormat;
 
 import javax.annotation.Nullable;
 import java.util.concurrent.ScheduledExecutorService;
@@ -223,6 +225,34 @@ public class EmbeddedServiceClient
     );
   }
 
+  /**
+   * Submits the given SQL query to any of the brokers (using {@code BrokerClient})
+   * of the cluster.
+   *
+   * @return The result of the SQL as a single CSV string.
+   */
+  public String runSql(String sql, Object... args)
+  {
+    try {
+      return onAnyBroker(
+          b -> b.submitSqlQuery(
+              new ClientSqlQuery(
+                  StringUtils.format(sql, args),
+                  ResultFormat.CSV.name(),
+                  false,
+                  false,
+                  false,
+                  null,
+                  null
+              )
+          )
+      ).trim();
+    }
+    catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
   @Nullable
   private <T> T makeRequest(
       Function<ObjectMapper, RequestBuilder> request,
@@ -235,8 +265,10 @@ public class EmbeddedServiceClient
 
     try {
       StatusResponseHolder response = serviceClient.request(requestBuilder, responseHandler);
-      if (!response.getStatus().equals(HttpResponseStatus.OK)
-          && !response.getStatus().equals(HttpResponseStatus.ACCEPTED)) {
+
+      // Handle all success status codes
+      final int statusCode = response.getStatus().code();
+      if (statusCode < 200 || statusCode >= 300) {
         throw new ISE(
             "Request[%s] failed with status[%s] content[%s].",
             requestBuilder.toString(),

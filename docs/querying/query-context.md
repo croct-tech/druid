@@ -27,7 +27,7 @@ description:
   -->
   
 
-The query context gives you fine-grained control over how Apache Druid executes your individual queries. While the default settings in Druid work well for most queries, you can set the query context to handle specific requirements and optimize performance.
+The query context gives you fine-grained control over how Apache&circledR; Druid executes your individual queries. While the default settings in Druid work well for most queries, you can set the query context to handle specific requirements and optimize performance.
 
 Common use cases for the query context include:
 - Override default timeouts for long-running queries or complex aggregations.
@@ -122,69 +122,20 @@ You can set multiple context parameters in a single request:
 
 ### JDBC driver API
 
-You can connect to Druid over JDBC and issue Druid SQL queries using the [Druid SQL JDBC driver API](../api-reference/sql-jdbc.md).
+You can connect to Druid over JDBC and issue Druid SQL queries using the [Druid JDBC driver](./sql-jdbc.md), which is
+recommended, or the [Avatica JDBC driver](./sql-jdbc-avatica.md).
 This approach is useful when integrating Druid with BI tools or Java applications.
-When connecting to Druid through JDBC, you set query context parameters in a JDBC connection properties object.
-You supply the object when establishing the connection to Druid.
 
-The following code excerpt shows how you can configure the connection properties:
+With the Druid JDBC driver, you can set query context parameters in the connection URL, in a connection properties
+object, or with `SET` statements. For details and examples, see
+[Query context parameters](./sql-jdbc.md#query-context-parameters).
 
-```java
-String url = "jdbc:avatica:remote:url=http://localhost:8888/druid/v2/sql/avatica/";
-
-// Set the time zone to America/Los_Angeles
-Properties connectionProperties = new Properties();
-connectionProperties.setProperty("sqlTimeZone", "America/Los_Angeles");
-
-try (Connection connection = DriverManager.getConnection(url, connectionProperties)) {
-  // create and execute statements, process result sets, etc
-}
-```
-
-<details>
-<summary>View full JDBC example</summary>
-
-```java
-import java.sql.*;
-import java.util.Properties;
-
-public class JdbcDruid {
-
-    public static void main(String args[]) {
-
-        // Connect to /druid/v2/sql/avatica/ on your Broker.
-        String url = "jdbc:avatica:remote:url=http://localhost:8888/druid/v2/sql/avatica/;transparent_reconnection=true";
-
-        // The query you want to run.
-        String query = "SELECT * FROM wikipedia WHERE user = 'BlueMoon2662'";
-
-        // Set any connection context parameters you need here.
-        Properties connectionProperties = new Properties();
-        connectionProperties.setProperty("sqlTimeZone", "America/Los_Angeles");
-
-        try (Connection connection = DriverManager.getConnection(url, connectionProperties)) {
-            try (
-                final Statement statement = connection.createStatement();
-                final ResultSet rs = statement.executeQuery(query)
-            ) {
-                while (rs.next()) {
-                    // process result set
-                    Timestamp timeStamp = rs.getTimestamp("__time");
-                    System.out.println(timeStamp);
-                }
-            }
-        } catch (Exception e) {
-            System.out.println(e.toString());
-        }
-    }
-}
-```
-
-</details>
+With the Avatica JDBC driver, you must set query context parameters in a connection properties object. For an example,
+see [Avatica JDBC driver](./sql-jdbc-avatica.md).
 
 ### SET statements
 
-You can use the SET command to specify SQL query context parameters that modify the behavior of a Druid SQL query. Druid accepts one or more SET statements before the main SQL query. The SET command works in the both web console and the Druid SQL HTTP API.
+You can use the SET command to specify SQL query context parameters that modify the behavior of a Druid SQL query. Druid accepts one or more SET statements before the main SQL query. The SET command works in the web console, the Druid SQL HTTP API, and the [Druid JDBC driver](./sql-jdbc.md#set-statements).
 
 In the web console, you can write your SET statements followed by your query directly. For example:
 
@@ -219,7 +170,8 @@ curl -X POST 'http://localhost:8888/druid/v2/sql' \
 For more details on how to use the SET command in your SQL query, see [SET](sql.md#set).
 
 :::info
-You cannot use SET statements in JDBC connections.
+You cannot use SET statements with the [Avatica JDBC driver](./sql-jdbc-avatica.md). Use the
+[Druid JDBC driver](./sql-jdbc.md#set-statements) instead.
 :::
 
 
@@ -275,15 +227,17 @@ For more information, see [Configuration reference](../configuration/index.md#ov
 
 ## Query context precedence
 
-For a given context query, Druid determines the final query context value to use based on the following order of precedence, from lowest to highest:
+For a given query context, Druid determines the final query context value to use based on the following order of precedence, from lowest to highest:
 
 1. **Built-in defaults**: Druid uses the documented default values if you don’t specify anything.
 
 2. **Runtime properties**: If you configure parameters as `druid.query.default.context.{PARAMETER}` in the configuration files, these override the built-in defaults and act as your system-wide defaults.
 
-3. **Context object in HTTP request**: Parameters passed within the JSON `context` object override both built-in defaults and runtime properties.
+3. **Broker Dynamic Config**: If you configure query context parameters in the Broker's dynamic config (see [Broker Dynamic Config](../api-reference/dynamic-configuration-api.md)). Overrides built-in defaults and runtime properties.
 
-4. **SET statements**: Parameters set in Druid SQL using `SET key=value;` take the highest precedence and override all other settings.
+4. **Context object in HTTP request**: Parameters passed within the JSON `context` object override built-in defaults, runtime properties, and Broker dynamic configs.
+
+5. **SET statements**: Parameters set in Druid SQL using `SET key=value;` take the highest precedence and override all other settings.
 
 
 ## Learn more

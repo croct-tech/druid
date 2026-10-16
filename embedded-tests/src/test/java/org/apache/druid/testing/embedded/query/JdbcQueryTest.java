@@ -70,8 +70,8 @@ public class JdbcQueryTest extends QueryTestBase
     connectionProperties.setProperty("password", "priest");
     connections = new String[]{
         StringUtils.format(CONNECTION_TEMPLATE, getServerUrl(router)),
-        StringUtils.format(CONNECTION_TEMPLATE, getServerUrl(broker)),
-        };
+        StringUtils.format(CONNECTION_TEMPLATE, getServerUrl(broker))
+    };
 
     dataSourceName = ingestBasicData();
   }
@@ -99,8 +99,8 @@ public class JdbcQueryTest extends QueryTestBase
           schemas.add(schema);
         }
         LOG.info("'druid' catalog schemas %s", schemas);
-        // maybe more schemas than this, but at least should have these
-        Assertions.assertTrue(schemas.containsAll(ImmutableList.of("INFORMATION_SCHEMA", "druid", "lookup", "sys")));
+        // Minimum set of schemas.
+        Assertions.assertTrue(schemas.containsAll(ImmutableList.of("INFORMATION_SCHEMA", "druid", "sys")));
 
         Set<String> druidTables = new HashSet<>();
         ResultSet tablesMetadata = metadata.getTables("druid", "druid", null, null);

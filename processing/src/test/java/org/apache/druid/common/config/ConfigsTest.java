@@ -19,25 +19,28 @@
 
 package org.apache.druid.common.config;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 public class ConfigsTest
 {
   @Test
   public void testValueOrDefault()
   {
-    Assert.assertEquals(10, Configs.valueOrDefault((Integer) 10, 11));
-    Assert.assertEquals(11, Configs.valueOrDefault((Integer) null, 11));
+    Assertions.assertEquals(10, Configs.valueOrDefault((Integer) 10, 11));
+    Assertions.assertEquals(11, Configs.valueOrDefault((Integer) null, 11));
 
-    Assert.assertEquals(10, Configs.valueOrDefault((Long) 10L, 11L));
-    Assert.assertEquals(11, Configs.valueOrDefault(null, 11L));
+    Assertions.assertEquals(10, Configs.valueOrDefault((Long) 10L, 11L));
+    Assertions.assertEquals(11, Configs.valueOrDefault((Long) null, 11L));
 
-    Assert.assertFalse(Configs.valueOrDefault((Boolean) false, true));
-    Assert.assertTrue(Configs.valueOrDefault(null, true));
+    Assertions.assertEquals(10.0, Configs.valueOrDefault((Double) 10.0, 11.0));
+    Assertions.assertEquals(11.0, Configs.valueOrDefault(null, 11.0));
 
-    Assert.assertEquals("abc", Configs.valueOrDefault("abc", "def"));
-    Assert.assertEquals("def", Configs.valueOrDefault(null, "def"));
+    Assertions.assertFalse(Configs.valueOrDefault((Boolean) false, true));
+    Assertions.assertTrue(Configs.valueOrDefault(null, true));
+
+    Assertions.assertEquals("abc", Configs.valueOrDefault("abc", "def"));
+    Assertions.assertEquals("def", Configs.valueOrDefault(null, "def"));
   }
 
 }

@@ -79,9 +79,9 @@ setKey() {
     service_conf=$(getConfPath $service)/runtime.properties
     # Delete from all
     sed -ri "/$key=/d" $COMMON_CONF_DIR/common.runtime.properties
-    [ -f $service_conf ] && sed -ri "/$key=/d" $service_conf
-    [ -f $service_conf ] && echo -e "\n$key=$value" >>$service_conf
-    [ -f $service_conf ] || echo -e "\n$key=$value" >>$COMMON_CONF_DIR/common.runtime.properties
+    [ -f "$service_conf" ] && sed -ri "/$key=/d" $service_conf
+    [ -f "$service_conf" ] && printf '\n%s=%s\n' "$key" "$value" >> "$service_conf"
+    [ -f "$service_conf" ] || printf '\n%s=%s\n' "$key" "$value" >> "$COMMON_CONF_DIR/common.runtime.properties"
 
     echo "Setting $key=$value in $service_conf"
 }
@@ -155,7 +155,7 @@ then
     echo "$DRUID_LOG4J" >$COMMON_CONF_DIR/log4j2.xml
 fi
 
-DRUID_DIRS_TO_CREATE=${DRUID_DIRS_TO_CREATE-'var/tmp var/druid/segments var/druid/indexing-logs var/druid/task var/druid/hadoop-tmp var/druid/segment-cache'}
+DRUID_DIRS_TO_CREATE=${DRUID_DIRS_TO_CREATE-'var/tmp var/druid/segments var/druid/indexing-logs var/druid/task var/druid/segment-cache'}
 if [ -n "${DRUID_DIRS_TO_CREATE}" ]
 then
     mkdir -p ${DRUID_DIRS_TO_CREATE}
@@ -164,6 +164,13 @@ fi
 # take the ${TASK_JSON} environment variable and base64 decode, unzip and throw it in ${TASK_DIR}/task.json.
 # If TASK_JSON is not set, CliPeon will pull the task.json file from deep storage.
 mkdir -p ${TASK_DIR}; [ -n "$TASK_JSON" ] && echo ${TASK_JSON} | base64 -d | gzip -d > ${TASK_DIR}/task.json;
+
+# Combine options from jvm.config and those given as JAVA_OPTS
+# If a value is specified in both then JAVA_OPTS will take precedence when using OpenJDK
+# However this behavior is not part of the spec and is thus implementation specific
+if [ -f "$SERVICE_CONF_DIR/jvm.config" ]; then
+    JAVA_OPTS="$(cat $SERVICE_CONF_DIR/jvm.config | xargs) $JAVA_OPTS"
+fi
 
 # Start peon using CliPeon, with variables `Main internal peon TASK_DIR ATTEMPT_ID`
 if [ -n "$TASK_ID" ]; then

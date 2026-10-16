@@ -36,7 +36,6 @@ import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.concurrent.Execs;
 import org.apache.druid.java.util.common.jackson.JacksonUtils;
 import org.apache.druid.java.util.metrics.StubServiceEmitter;
-import org.apache.druid.msq.dart.controller.ControllerHolder;
 import org.apache.druid.msq.dart.controller.ControllerThreadPool;
 import org.apache.druid.msq.dart.controller.DartControllerRegistry;
 import org.apache.druid.msq.dart.controller.sql.DartQueryMaker;
@@ -46,6 +45,7 @@ import org.apache.druid.msq.dart.controller.sql.DartSqlEngine;
 import org.apache.druid.msq.dart.guice.DartControllerConfig;
 import org.apache.druid.msq.exec.Controller;
 import org.apache.druid.msq.exec.ControllerContext;
+import org.apache.druid.msq.exec.ControllerHolder;
 import org.apache.druid.msq.indexing.MSQSpec;
 import org.apache.druid.msq.indexing.error.CanceledFault;
 import org.apache.druid.msq.indexing.error.InvalidNullByteFault;
@@ -54,6 +54,7 @@ import org.apache.druid.msq.indexing.error.MSQFaultUtils;
 import org.apache.druid.msq.indexing.report.MSQStatusReport;
 import org.apache.druid.msq.indexing.report.MSQTaskReport;
 import org.apache.druid.msq.kernel.controller.ControllerQueryKernelConfig;
+import org.apache.druid.msq.querykit.DataSourcePlanners;
 import org.apache.druid.msq.querykit.MultiQueryKit;
 import org.apache.druid.msq.sql.DartQueryKitSpecFactory;
 import org.apache.druid.msq.test.MSQTestBase;
@@ -61,6 +62,7 @@ import org.apache.druid.msq.test.MSQTestControllerContext;
 import org.apache.druid.query.DefaultQueryConfig;
 import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryContexts;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.policy.NoopPolicyEnforcer;
 import org.apache.druid.server.DruidNode;
 import org.apache.druid.server.QueryStackTests;
@@ -72,18 +74,16 @@ import org.apache.druid.server.mocks.MockAsyncContext;
 import org.apache.druid.server.mocks.MockHttpServletResponse;
 import org.apache.druid.server.security.AuthConfig;
 import org.apache.druid.server.security.AuthenticationResult;
-import org.apache.druid.server.security.ForbiddenException;
 import org.apache.druid.sql.SqlLifecycleManager;
 import org.apache.druid.sql.SqlToolbox;
 import org.apache.druid.sql.calcite.planner.CalciteRulesManager;
 import org.apache.druid.sql.calcite.planner.CatalogResolver;
 import org.apache.druid.sql.calcite.planner.PlannerConfig;
 import org.apache.druid.sql.calcite.planner.PlannerFactory;
-import org.apache.druid.sql.calcite.schema.DruidSchemaCatalog;
+import org.apache.druid.sql.calcite.schema.DruidSchemaCatalogProvider;
 import org.apache.druid.sql.calcite.schema.NoopDruidSchemaManager;
 import org.apache.druid.sql.calcite.util.CalciteTests;
 import org.apache.druid.sql.calcite.util.QueryFrameworkUtils;
-import org.apache.druid.sql.calcite.util.TestTimelineServerView;
 import org.apache.druid.sql.calcite.view.NoopViewManager;
 import org.apache.druid.sql.hook.DruidHookDispatcher;
 import org.apache.druid.sql.http.EngineInfo;
@@ -95,14 +95,16 @@ import org.apache.druid.sql.http.SqlResource;
 import org.apache.druid.sql.http.SqlResourceQueryResultPusherFactory;
 import org.apache.druid.sql.http.StandardQueryState;
 import org.apache.druid.sql.http.SupportedEnginesResponse;
-import org.hamcrest.CoreMatchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.core.Response;
@@ -114,15 +116,16 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-
-import static org.hamcrest.MatcherAssert.assertThat;
 
 /**
  * Functional test of {@link SqlResource}, {@link DartSqlEngine}, and {@link DartQueryMaker}.
  * Other classes are mocked when possible.
  */
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 public class DartSqlResourceTest extends MSQTestBase
 {
   private static final DruidNode SELF_NODE = new DruidNode("none", "localhost", false, 8080, -1, true, false);
@@ -152,7 +155,6 @@ public class DartSqlResourceTest extends MSQTestBase
   private SqlResource sqlResource;
   private DartControllerRegistry controllerRegistry;
   private ControllerThreadPool controllerThreadPool;
-  private AutoCloseable mockCloser;
   private final StubServiceEmitter serviceEmitter = new StubServiceEmitter();
 
   // Mocks below this line.
@@ -184,9 +186,7 @@ public class DartSqlResourceTest extends MSQTestBase
   @BeforeEach
   void setUp()
   {
-    mockCloser = MockitoAnnotations.openMocks(this);
-
-    final DruidSchemaCatalog rootSchema = QueryFrameworkUtils.createMockRootSchema(
+    final DruidSchemaCatalogProvider schemaProvider = QueryFrameworkUtils.createMockRootSchemaProvider(
         CalciteTests.INJECTOR,
         queryFramework().conglomerate(),
         queryFramework().walker(),
@@ -198,7 +198,7 @@ public class DartSqlResourceTest extends MSQTestBase
     );
 
     final PlannerFactory plannerFactory = new PlannerFactory(
-        rootSchema,
+        schemaProvider,
         queryFramework().operatorTable(),
         queryFramework().macroTable(),
         PLANNER_CONFIG_DEFAULT,
@@ -263,9 +263,14 @@ public class DartSqlResourceTest extends MSQTestBase
                     MAX_CONTROLLERS,
                     StringUtils.encodeForFormat(getClass().getSimpleName() + "-controller-exec")
                 )
+            ),
+            Executors.newSingleThreadScheduledExecutor(
+                Execs.makeThreadFactory(
+                    StringUtils.encodeForFormat(getClass().getSimpleName() + "-controller-timeout")
+                )
             )
         ),
-        new DartQueryKitSpecFactory(new TestTimelineServerView(Collections.emptyList())),
+        new DartQueryKitSpecFactory(new DataSourcePlanners(Map.of())),
         injector.getInstance(MultiQueryKit.class),
         new ServerConfig(),
         new DefaultQueryConfig(ImmutableMap.of("foo", "bar")),
@@ -294,12 +299,10 @@ public class DartSqlResourceTest extends MSQTestBase
   @AfterEach
   void tearDown() throws Exception
   {
-    mockCloser.close();
-
     // shutdown(), not shutdownNow(), to ensure controllers stop timely on their own.
-    controllerThreadPool.getExecutorService().shutdown();
+    controllerThreadPool.getRunExecutorService().shutdown();
 
-    if (!controllerThreadPool.getExecutorService().awaitTermination(1, TimeUnit.MINUTES)) {
+    if (!controllerThreadPool.getRunExecutorService().awaitTermination(1, TimeUnit.MINUTES)) {
       throw new IAE("controllerExecutor.awaitTermination() timed out");
     }
 
@@ -381,9 +384,10 @@ public class DartSqlResourceTest extends MSQTestBase
         AUTHENTICATOR_NAME,
         DIFFERENT_REGULAR_USER_NAME,
         DateTimes.of("2001"),
-        StandardQueryState.RUNNING
+        StandardQueryState.RUNNING,
+        null
     );
-    Mockito.when(dartSqlClient.getRunningQueries(true, false))
+    Mockito.when(dartSqlClient.getQueries(true, false))
            .thenReturn(Futures.immediateFuture(new GetQueriesResponse(Collections.singletonList(remoteQueryInfo))));
 
     // With selfOnly = null, the endpoint returns both queries.
@@ -414,7 +418,7 @@ public class DartSqlResourceTest extends MSQTestBase
     final ControllerHolder localHolder = setUpMockRunningQuery(REGULAR_USER_NAME);
 
     // Remote call fails.
-    Mockito.when(dartSqlClient.getRunningQueries(true, false))
+    Mockito.when(dartSqlClient.getQueries(true, false))
            .thenReturn(Futures.immediateFailedFuture(new IOException("something went wrong")));
 
     // We only see local queries, because the remote call failed. (The entire call doesn't fail; we see what we
@@ -449,9 +453,10 @@ public class DartSqlResourceTest extends MSQTestBase
         AUTHENTICATOR_NAME,
         DIFFERENT_REGULAR_USER_NAME,
         DateTimes.of("2000"),
-        StandardQueryState.RUNNING
+        StandardQueryState.RUNNING,
+        null
     );
-    Mockito.when(dartSqlClient.getRunningQueries(true, false))
+    Mockito.when(dartSqlClient.getQueries(true, false))
            .thenReturn(Futures.immediateFuture(new GetQueriesResponse(Collections.singletonList(remoteQueryInfo))));
 
     // The endpoint returns only the query issued by REGULAR_USER_NAME.
@@ -486,9 +491,10 @@ public class DartSqlResourceTest extends MSQTestBase
         AUTHENTICATOR_NAME,
         DIFFERENT_REGULAR_USER_NAME,
         DateTimes.of("2000"),
-        StandardQueryState.RUNNING
+        StandardQueryState.RUNNING,
+        null
     );
-    Mockito.when(dartSqlClient.getRunningQueries(true, false))
+    Mockito.when(dartSqlClient.getQueries(true, false))
            .thenReturn(Futures.immediateFuture(new GetQueriesResponse(Collections.singletonList(remoteQueryInfo))));
 
     // The endpoint returns only the query issued by DIFFERENT_REGULAR_USER_NAME.
@@ -528,7 +534,67 @@ public class DartSqlResourceTest extends MSQTestBase
   }
 
   @Test
-  public void test_doPost_regularUser_forbidden()
+  public void test_doPost_informationSchema()
+  {
+    final MockAsyncContext asyncContext = new MockAsyncContext();
+    final MockHttpServletResponse asyncResponse = new MockHttpServletResponse();
+    asyncContext.response = asyncResponse;
+
+    Mockito.when(httpServletRequest.getAttribute(AuthConfig.DRUID_AUTHENTICATION_RESULT))
+           .thenReturn(makeAuthenticationResult(CalciteTests.TEST_SUPERUSER_NAME));
+    Mockito.when(httpServletRequest.startAsync())
+           .thenReturn(asyncContext);
+
+    final SqlQuery sqlQuery = new SqlQuery(
+        "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME",
+        ResultFormat.ARRAY,
+        false,
+        false,
+        false,
+        Map.of(QueryContexts.ENGINE, DartSqlEngine.NAME),
+        Collections.emptyList()
+    );
+
+    Assertions.assertNull(sqlResource.doPost(sqlQuery, httpServletRequest));
+    Assertions.assertEquals(Response.Status.OK.getStatusCode(), asyncResponse.getStatus());
+    Assertions.assertEquals(
+        "[[\"INFORMATION_SCHEMA\"],[\"druid\"],[\"lookup\"],[\"sys\"]]\n",
+        StringUtils.fromUtf8(asyncResponse.baos.toByteArray())
+    );
+  }
+
+  @Test
+  public void test_doPost_sysTableJoinedToDatasource()
+  {
+    final MockAsyncContext asyncContext = new MockAsyncContext();
+    final MockHttpServletResponse asyncResponse = new MockHttpServletResponse();
+    asyncContext.response = asyncResponse;
+
+    Mockito.when(httpServletRequest.getAttribute(AuthConfig.DRUID_AUTHENTICATION_RESULT))
+           .thenReturn(makeAuthenticationResult(CalciteTests.TEST_SUPERUSER_NAME));
+    Mockito.when(httpServletRequest.startAsync())
+           .thenReturn(asyncContext);
+
+    final SqlQuery sqlQuery = new SqlQuery(
+        StringUtils.format(
+            "SELECT s.segment_id, f.dim1 FROM sys.segments AS s, %s AS f",
+            CalciteTests.DATASOURCE1
+        ),
+        ResultFormat.ARRAY,
+        false,
+        false,
+        false,
+        Map.of(QueryContexts.ENGINE, DartSqlEngine.NAME),
+        Collections.emptyList()
+    );
+
+    // 501 Not Implemented.
+    final Response response = sqlResource.doPost(sqlQuery, httpServletRequest);
+    Assertions.assertEquals(501, response.getStatus());
+  }
+
+  @Test
+  public void test_doPost_regularUser_unauthorizedTable()
   {
     final MockAsyncContext asyncContext = new MockAsyncContext();
     final MockHttpServletResponse asyncResponse = new MockHttpServletResponse();
@@ -549,10 +615,18 @@ public class DartSqlResourceTest extends MSQTestBase
         Collections.emptyList()
     );
 
-    Assertions.assertThrows(
-        ForbiddenException.class,
-        () -> sqlResource.doPost(sqlQuery, httpServletRequest)
+    // 400 Bad Request: the table is not visible to this user, so it cannot be resolved.
+    final Response response = sqlResource.doPost(sqlQuery, httpServletRequest);
+    Assertions.assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
+
+    final Map<String, Object> e = objectMapper.convertValue(
+        response.getEntity(),
+        JacksonUtils.TYPE_REFERENCE_MAP_STRING_OBJECT
     );
+
+    Assertions.assertEquals("invalidInput", e.get("errorCode"));
+    Assertions.assertEquals("INVALID_INPUT", e.get("category"));
+    Assertions.assertTrue(((String) e.get("errorMessage")).startsWith("Object 'forbiddenDatasource' not found"));
   }
 
   @Test
@@ -578,7 +652,7 @@ public class DartSqlResourceTest extends MSQTestBase
     );
 
     Assertions.assertNull(sqlResource.doPost(sqlQuery, httpServletRequest));
-    Assertions.assertEquals(Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(), asyncResponse.getStatus());
+    Assertions.assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), asyncResponse.getStatus());
 
     final Map<String, Object> e = objectMapper.readValue(
         asyncResponse.baos.toByteArray(),
@@ -586,8 +660,8 @@ public class DartSqlResourceTest extends MSQTestBase
     );
 
     Assertions.assertEquals("InvalidNullByte", e.get("errorCode"));
-    Assertions.assertEquals("RUNTIME_FAILURE", e.get("category"));
-    assertThat((String) e.get("errorMessage"), CoreMatchers.startsWith("InvalidNullByte: "));
+    Assertions.assertEquals("INVALID_INPUT", e.get("category"));
+    Assertions.assertTrue(((String) e.get("errorMessage")).startsWith("InvalidNullByte: "));
   }
 
   @Test
@@ -651,7 +725,7 @@ public class DartSqlResourceTest extends MSQTestBase
         false,
         ImmutableMap.of(
             QueryContexts.CTX_FULL_REPORT, true,
-            QueryContexts.TIMEOUT_KEY, 1,
+            QueryContextParameters.TIMEOUT.getName(), 1,
             QueryContexts.ENGINE, DartSqlEngine.NAME
         ),
         Collections.emptyList()
@@ -713,7 +787,7 @@ public class DartSqlResourceTest extends MSQTestBase
         (MSQTaskReport) Iterables.getOnlyElement(Iterables.getOnlyElement(reportMaps)).get(MSQTaskReport.REPORT_KEY);
     final MSQErrorReport errorReport = report.getPayload().getStatus().getErrorReport();
     Assertions.assertNotNull(errorReport);
-    assertThat(errorReport.getFault(), CoreMatchers.instanceOf(InvalidNullByteFault.class));
+    Assertions.assertInstanceOf(InvalidNullByteFault.class, errorReport.getFault());
   }
 
   @Test
@@ -746,11 +820,12 @@ public class DartSqlResourceTest extends MSQTestBase
            .thenReturn(asyncContext);
 
     // Cancellation request.
-    Mockito.when(httpServletRequest2.getAttribute(AuthConfig.DRUID_AUTHENTICATION_RESULT))
-           .thenReturn(makeAuthenticationResult(REGULAR_USER_NAME));
+    Mockito.doReturn(makeAuthenticationResult(REGULAR_USER_NAME))
+           .when(httpServletRequest2)
+           .getAttribute(AuthConfig.DRUID_AUTHENTICATION_RESULT);
 
     // Block up the controllerExecutor so the controller runs long enough to cancel it.
-    final Future<?> sleepFuture = controllerThreadPool.getExecutorService().submit(() -> {
+    final Future<?> sleepFuture = controllerThreadPool.getRunExecutorService().submit(() -> {
       try {
         Thread.sleep(3_600_000);
       }

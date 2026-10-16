@@ -34,10 +34,10 @@ import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.file.SegmentFileChannel;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMedium;
 import org.apache.druid.segment.writeout.SegmentWriteOutMedium;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.apache.druid.testing.TemporaryFolderExtension;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.annotation.Nullable;
 import java.io.File;
@@ -48,8 +48,8 @@ public class LargeColumnSupportedComplexColumnSerializerTest
 
   private final HashFunction fn = Hashing.murmur3_128();
 
-  @Rule
-  public TemporaryFolder temporaryFolder = new TemporaryFolder();
+  @RegisterExtension
+  public final TemporaryFolderExtension temporaryFolder = TemporaryFolderExtension.testCaseScoped();
 
   @Test
   public void testSanity() throws IOException
@@ -126,7 +126,7 @@ public class LargeColumnSupportedComplexColumnSerializerTest
         for (int i = 0; i < aCase; i++) {
           collector.fold((HyperLogLogCollector) complexColumn.getRowValue(i));
         }
-        Assert.assertEquals(baseCollector.estimateCardinality(), collector.estimateCardinality(), 0.0);
+        Assertions.assertEquals(baseCollector.estimateCardinality(), collector.estimateCardinality(), 0.0);
       }
     }
   }

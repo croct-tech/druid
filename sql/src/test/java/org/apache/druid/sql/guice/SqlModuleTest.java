@@ -19,14 +19,14 @@
 
 package org.apache.druid.sql.guice;
 
-import com.google.common.base.Supplier;
-import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Binder;
 import com.google.inject.Guice;
 import com.google.inject.Injector;
 import com.google.inject.Key;
-import com.google.inject.TypeLiteral;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import org.apache.druid.client.BrokerViewOfCoordinatorConfig;
 import org.apache.druid.client.FilteredServerInventoryView;
 import org.apache.druid.client.TimelineServerView;
 import org.apache.druid.client.coordinator.CoordinatorClient;
@@ -48,12 +48,14 @@ import org.apache.druid.java.util.http.client.HttpClient;
 import org.apache.druid.math.expr.ExprMacroTable;
 import org.apache.druid.query.DefaultQueryConfig;
 import org.apache.druid.query.GenericQueryMetricsFactory;
+import org.apache.druid.query.QueryConfigProvider;
 import org.apache.druid.query.QueryRunnerFactoryConglomerate;
 import org.apache.druid.query.QuerySegmentWalker;
 import org.apache.druid.query.QueryToolChestWarehouse;
 import org.apache.druid.query.lookup.LookupExtractorFactoryContainerProvider;
 import org.apache.druid.rpc.indexing.NoopOverlordClient;
 import org.apache.druid.rpc.indexing.OverlordClient;
+import org.apache.druid.segment.indexing.SegmentTimelineConfig;
 import org.apache.druid.segment.join.JoinableFactory;
 import org.apache.druid.segment.loading.SegmentCacheManager;
 import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
@@ -74,19 +76,17 @@ import org.apache.druid.sql.calcite.view.NoopViewManager;
 import org.apache.druid.sql.calcite.view.ViewManager;
 import org.apache.druid.sql.http.SqlResourceTest;
 import org.easymock.EasyMock;
-import org.easymock.EasyMockRunner;
+import org.easymock.EasyMockExtension;
 import org.easymock.Mock;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-import javax.validation.Validation;
-import javax.validation.Validator;
 import java.util.Map;
 import java.util.Properties;
 
-@RunWith(EasyMockRunner.class)
+@ExtendWith(EasyMockExtension.class)
 public class SqlModuleTest
 {
   @Mock
@@ -120,6 +120,9 @@ public class SqlModuleTest
   private SegmentCacheManager segmentCacheManager;
 
   @Mock
+  private SegmentTimelineConfig segmentTimelineConfig;
+
+  @Mock
   private QueryRunnerFactoryConglomerate conglomerate;
 
   @Mock
@@ -127,7 +130,7 @@ public class SqlModuleTest
 
   private Injector injector;
 
-  @Before
+  @BeforeEach
   public void setUp()
   {
     EasyMock.replay(
@@ -141,6 +144,7 @@ public class SqlModuleTest
         lookupExtractorFactoryContainerProvider,
         joinableFactory,
         segmentCacheManager,
+        segmentTimelineConfig,
         httpClient
     );
   }
@@ -156,8 +160,8 @@ public class SqlModuleTest
     injector = makeInjectorWithProperties(props);
 
     ViewManager viewManager = injector.getInstance(Key.get(ViewManager.class));
-    Assert.assertNotNull(viewManager);
-    Assert.assertTrue(viewManager instanceof NoopViewManager);
+    Assertions.assertNotNull(viewManager);
+    Assertions.assertTrue(viewManager instanceof NoopViewManager);
   }
 
   @Test
@@ -172,8 +176,8 @@ public class SqlModuleTest
     injector = makeInjectorWithProperties(props);
 
     ViewManager viewManager = injector.getInstance(Key.get(ViewManager.class));
-    Assert.assertNotNull(viewManager);
-    Assert.assertTrue(viewManager instanceof BindTestViewManager);
+    Assertions.assertNotNull(viewManager);
+    Assertions.assertTrue(viewManager instanceof BindTestViewManager);
   }
 
   private Injector makeInjectorWithProperties(final Properties props)
@@ -199,7 +203,7 @@ public class SqlModuleTest
               binder.bind(Escalator.class).toInstance(new NoopEscalator());
               binder.bind(ServiceEmitter.class).toInstance(serviceEmitter);
               binder.bind(RequestLogger.class).toInstance(NoopRequestLogger.instance());
-              binder.bind(new TypeLiteral<Supplier<DefaultQueryConfig>>(){}).toInstance(Suppliers.ofInstance(new DefaultQueryConfig(null)));
+              binder.bind(QueryConfigProvider.class).to(DefaultQueryConfig.class);
               binder.bind(FilteredServerInventoryView.class).toInstance(inventoryView);
               binder.bind(TimelineServerView.class).toInstance(timelineServerView);
               binder.bind(DruidNodeDiscoveryProvider.class).toInstance(druidNodeDiscoveryProvider);
@@ -210,6 +214,7 @@ public class SqlModuleTest
               binder.bind(LookupExtractorFactoryContainerProvider.class).toInstance(lookupExtractorFactoryContainerProvider);
               binder.bind(JoinableFactory.class).toInstance(joinableFactory);
               binder.bind(SegmentCacheManager.class).toInstance(segmentCacheManager);
+              binder.bind(SegmentTimelineConfig.class).toInstance(segmentTimelineConfig);
               binder.bind(QuerySchedulerProvider.class).in(LazySingleton.class);
               binder.bind(QueryScheduler.class)
                     .toProvider(QuerySchedulerProvider.class)
@@ -218,6 +223,8 @@ public class SqlModuleTest
               binder.bind(CatalogResolver.class).toInstance(CatalogResolver.NULL_RESOLVER);
               binder.bind(OverlordClient.class).to(NoopOverlordClient.class);
               binder.bind(CoordinatorClient.class).to(NoopCoordinatorClient.class);
+              binder.bind(BrokerViewOfCoordinatorConfig.class).toProvider(() -> null);
+              binder.bind(org.apache.druid.client.BrokerViewOfBrokerConfig.class).toProvider(() -> null);
               binder.bind(CentralizedDatasourceSchemaConfig.class)
                     .toInstance(CentralizedDatasourceSchemaConfig.enabled(false));
               binder.bind(DefaultQueryConfig.class).toInstance(DefaultQueryConfig.NIL);

@@ -158,6 +158,7 @@ public class MSQTaskSqlEngine implements SqlEngine
       case GROUPING_SETS:
       case ALLOW_TOP_LEVEL_UNION_ALL:
       case GROUPBY_IMPLICITLY_SORTS:
+      case CAN_DDL:
         return false;
       case WINDOW_FUNCTIONS:
       case WINDOW_LEAF_OPERATOR:
@@ -186,10 +187,8 @@ public class MSQTaskSqlEngine implements SqlEngine
         null,
         overlordClient,
         plannerContext,
-        jsonMapper,
         relRoot.fields,
-        terminalStageSpecFactory,
-        queryKitSpecFactory
+        terminalStageSpecFactory
     );
   }
 
@@ -208,11 +207,7 @@ public class MSQTaskSqlEngine implements SqlEngine
     validateInsert(
         relRoot,
         destination instanceof TableDestination
-        ? plannerContext.getPlannerToolbox()
-                        .rootSchema()
-                        .getNamedSchema(plannerContext.getPlannerToolbox().druidSchemaName())
-                        .getSchema()
-                        .getTable(((TableDestination) destination).getTableName())
+        ? plannerContext.getDruidTable(((TableDestination) destination).getTableName())
         : null,
         plannerContext
     );
@@ -221,10 +216,8 @@ public class MSQTaskSqlEngine implements SqlEngine
         destination,
         overlordClient,
         plannerContext,
-        jsonMapper,
         relRoot.fields,
-        terminalStageSpecFactory,
-        queryKitSpecFactory
+        terminalStageSpecFactory
     );
   }
 

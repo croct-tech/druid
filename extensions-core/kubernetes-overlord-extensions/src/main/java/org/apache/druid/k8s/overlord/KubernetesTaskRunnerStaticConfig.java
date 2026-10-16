@@ -22,13 +22,14 @@ package org.apache.druid.k8s.overlord;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 import org.apache.commons.lang3.ObjectUtils;
 import org.joda.time.Period;
 
 import javax.annotation.Nonnull;
-import javax.validation.constraints.Max;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
+import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Map;
 
@@ -76,6 +77,7 @@ public class KubernetesTaskRunnerStaticConfig implements KubernetesTaskRunnerCon
   // has completed
   private String kubexitImage = "karlkfi/kubexit:v0.3.2";
 
+  @JsonProperty
   // how much time to wait for preStop hooks to execute
   // lower number speeds up pod termination time to release locks
   // faster, defaults to your k8s setup, usually 30 seconds.
@@ -151,6 +153,15 @@ public class KubernetesTaskRunnerStaticConfig implements KubernetesTaskRunnerCon
   @JsonProperty
   private Period k8sSharedInformerResyncPeriod = new Period("PT5M");
 
+  @JsonProperty
+  // Allow per-task pod template selection via the task context.
+  private boolean allowTaskPodTemplateSelection = false;
+
+  @JsonProperty
+  @Max(0xffff)
+  // task pods are reached by pod IP, not service discovery, so druid.advertisedPlaintextPort can't apply to them
+  private Integer advertisedPlaintextPort = null;
+
   public KubernetesTaskRunnerStaticConfig()
   {
   }
@@ -178,7 +189,9 @@ public class KubernetesTaskRunnerStaticConfig implements KubernetesTaskRunnerCon
       Integer capacity,
       Period taskJoinTimeout,
       boolean useK8sSharedInformers,
-      Period k8sSharedInformerResyncPeriod
+      Period k8sSharedInformerResyncPeriod,
+      boolean allowTaskPodTemplateSelection,
+      @Nullable Integer advertisedPlaintextPort
   )
   {
     this.namespace = namespace;
@@ -264,6 +277,11 @@ public class KubernetesTaskRunnerStaticConfig implements KubernetesTaskRunnerCon
         k8sSharedInformerResyncPeriod,
         this.k8sSharedInformerResyncPeriod
     );
+    this.allowTaskPodTemplateSelection = ObjectUtils.getIfNull(
+        allowTaskPodTemplateSelection,
+        this.allowTaskPodTemplateSelection
+    );
+    this.advertisedPlaintextPort = advertisedPlaintextPort;
   }
 
   @Override
@@ -404,5 +422,18 @@ public class KubernetesTaskRunnerStaticConfig implements KubernetesTaskRunnerCon
   public Period getK8sSharedInformerResyncPeriod()
   {
     return k8sSharedInformerResyncPeriod;
+  }
+
+  @Override
+  public boolean isAllowTaskPodTemplateSelection()
+  {
+    return allowTaskPodTemplateSelection;
+  }
+
+  @Override
+  @Nullable
+  public Integer getAdvertisedPlaintextPort()
+  {
+    return advertisedPlaintextPort;
   }
 }

@@ -29,7 +29,7 @@ describe('Execution', () => {
           asyncResultId: 'multi-stage-query-sql-1392d806-c17f-4937-94ee-8fa0a3ce1566',
           error: null,
         } as any),
-      ).toThrowError('Invalid payload');
+      ).toThrow('Invalid payload');
     });
 
     it('works in a general case', () => {
@@ -295,6 +295,7 @@ describe('Execution', () => {
           )
         ) EXTEND ("timestamp" VARCHAR, "agent_type" VARCHAR)
         PARTITIONED BY ALL TIME",
+          "sqlQueryId": undefined,
           "stages": Stages {
             "counters": {
               "0": {
@@ -602,6 +603,16 @@ describe('Execution', () => {
             "runningTasks": 1,
           },
           "warnings": undefined,
+          "workers": {
+            "0": [
+              {
+                "durationMs": 8789,
+                "pendingMs": 123,
+                "state": "SUCCESS",
+                "workerId": "query-346b9ac6-4912-46e4-9b98-75f11071af87-worker0_0",
+              },
+            ],
+          },
         }
       `);
     });
@@ -662,6 +673,7 @@ describe('Execution', () => {
           },
           "segmentStatus": undefined,
           "sqlQuery": undefined,
+          "sqlQueryId": undefined,
           "stages": Stages {
             "counters": {
               "0": {
@@ -1112,6 +1124,7 @@ describe('Execution', () => {
           "status": "SUCCESS",
           "usageInfo": undefined,
           "warnings": undefined,
+          "workers": undefined,
         }
       `);
     });
@@ -1145,6 +1158,7 @@ describe('Execution', () => {
           "result": undefined,
           "segmentStatus": undefined,
           "sqlQuery": undefined,
+          "sqlQueryId": undefined,
           "stages": Stages {
             "counters": {
               "0": {
@@ -1512,6 +1526,7 @@ describe('Execution', () => {
               "taskId": "query-ea3e36df-ad67-4870-b136-f5616b17d9c4-worker0_0",
             },
           ],
+          "workers": undefined,
         }
       `);
     });

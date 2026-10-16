@@ -22,6 +22,7 @@ package org.apache.druid.msq.test;
 import com.google.common.collect.ImmutableMap;
 import org.apache.druid.query.JoinAlgorithm;
 import org.apache.druid.query.QueryContexts;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.sql.calcite.CalciteJoinQueryTest;
 import org.apache.druid.sql.calcite.NotYetSupported;
 import org.apache.druid.sql.calcite.NotYetSupported.Modes;
@@ -29,7 +30,7 @@ import org.apache.druid.sql.calcite.NotYetSupported.NotYetSupportedProcessor;
 import org.apache.druid.sql.calcite.QueryTestBuilder;
 import org.apache.druid.sql.calcite.SqlTestFrameworkConfig;
 import org.apache.druid.sql.calcite.planner.PlannerContext;
-import org.junit.AssumptionViolatedException;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
@@ -85,9 +86,9 @@ public abstract class DecoupledDartCalciteJoinQueryTest extends CalciteJoinQuery
                     QueryContexts.CTX_NATIVE_QUERY_SQL_PLANNING_MODE,
                     QueryContexts.NATIVE_QUERY_SQL_PLANNING_MODE_DECOUPLED
                 )
-                .put(QueryContexts.REWRITE_JOIN_TO_FILTER_ENABLE_KEY, decoupledExtension)
+                .put(QueryContextParameters.ENABLE_REWRITE_JOIN_TO_FILTER.getName(), decoupledExtension)
                 .put(PlannerContext.CTX_SQL_JOIN_ALGORITHM, joinAlgorithm().toString())
-                .put(QueryContexts.ENABLE_DEBUG, true)
+                .put(QueryContextParameters.DEBUG.getName(), true)
                 .build()
         );
   }
@@ -107,7 +108,7 @@ public abstract class DecoupledDartCalciteJoinQueryTest extends CalciteJoinQuery
   @Override
   protected void msqIncompatible()
   {
-    throw new AssumptionViolatedException("Case marked as msqIncompatible; not trying dart right now");
+    Assumptions.assumeFalse(true, "Case marked as msqIncompatible; not trying dart right now");
   }
 
   @Override

@@ -27,33 +27,26 @@ import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.collect.SetMultimap;
 import com.google.inject.Inject;
 import org.apache.druid.guice.ExtensionsConfig;
-import org.apache.druid.indexer.HadoopTaskConfig;
 import org.apache.druid.java.util.common.FileUtils;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.maven.artifact.resolver.ArtifactNotFoundException;
-import org.apache.maven.repository.internal.MavenRepositorySystemUtils;
-import org.eclipse.aether.DefaultRepositorySystemSession;
 import org.eclipse.aether.RepositorySystem;
 import org.eclipse.aether.RepositorySystemSession;
 import org.eclipse.aether.artifact.Artifact;
 import org.eclipse.aether.artifact.DefaultArtifact;
 import org.eclipse.aether.collection.CollectRequest;
-import org.eclipse.aether.connector.basic.BasicRepositoryConnectorFactory;
 import org.eclipse.aether.graph.Dependency;
 import org.eclipse.aether.graph.DependencyNode;
-import org.eclipse.aether.impl.DefaultServiceLocator;
-import org.eclipse.aether.repository.LocalRepository;
 import org.eclipse.aether.repository.Proxy;
 import org.eclipse.aether.repository.RemoteRepository;
 import org.eclipse.aether.resolution.ArtifactResult;
 import org.eclipse.aether.resolution.DependencyRequest;
 import org.eclipse.aether.resolution.DependencyResolutionException;
 import org.eclipse.aether.resolution.DependencyResult;
-import org.eclipse.aether.spi.connector.RepositoryConnectorFactory;
-import org.eclipse.aether.spi.connector.transport.TransporterFactory;
-import org.eclipse.aether.transport.http.HttpTransporterFactory;
+import org.eclipse.aether.supplier.RepositorySystemSupplier;
+import org.eclipse.aether.supplier.SessionBuilderSupplier;
 import org.eclipse.aether.util.artifact.JavaScopes;
 import org.eclipse.aether.util.filter.DependencyFilterUtils;
 import org.eclipse.aether.util.repository.AuthenticationBuilder;
@@ -61,6 +54,7 @@ import org.eclipse.aether.util.repository.DefaultProxySelector;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -68,7 +62,7 @@ import java.util.stream.Collectors;
 
 @Command(
     name = "pull-deps",
-    description = "Pull down dependencies to the local repository specified by druid.extensions.localRepository, extensions directory specified by druid.extensions.extensionsDir and hadoop dependencies directory specified by druid.extensions.hadoopDependenciesDir"
+    description = "Pull down dependencies to the local repository specified by druid.extensions.localRepository, extensions directory specified by druid.extensions.extensionsDir"
 )
 public class PullDependencies implements Runnable
 {
@@ -87,14 +81,32 @@ public class PullDependencies implements Runnable
                   .put("com.fasterxml.jackson.core", "jackson-databind")
                   .put("com.fasterxml.jackson.core", "jackson-core")
                   .put("com.fasterxml.jackson.core", "jackson-annotations")
+                  // Netty 4 is bundled in lib/ (used by the core Druid HTTP client). The netty-bom import at the root
+                  // pom appears to defeat scope=provided on transitive netty jars in some extensions, so exclude them
+                  // here to keep them from being duplicated.
+                  .put("io.netty", "netty-buffer")
+                  .put("io.netty", "netty-codec")
+                  .put("io.netty", "netty-codec-base")
+                  .put("io.netty", "netty-codec-compression")
+                  .put("io.netty", "netty-codec-dns")
+                  .put("io.netty", "netty-codec-http")
+                  .put("io.netty", "netty-codec-marshalling")
+                  .put("io.netty", "netty-codec-protobuf")
+                  .put("io.netty", "netty-codec-socks")
+                  .put("io.netty", "netty-common")
+                  .put("io.netty", "netty-handler")
+                  .put("io.netty", "netty-handler-proxy")
+                  .put("io.netty", "netty-resolver")
+                  .put("io.netty", "netty-resolver-dns")
+                  .put("io.netty", "netty-transport")
+                  .put("io.netty", "netty-transport-classes-epoll")
+                  .put("io.netty", "netty-transport-native-unix-common")
                   .build();
 
   private static final Dependencies SECURITY_VULNERABILITY_EXCLUSIONS =
       Dependencies.builder()
                   .put("commons-beanutils", "commons-beanutils-core")
                   .build();
-
-  private final Dependencies hadoopExclusions;
 
   @Inject
   public ExtensionsConfig extensionsConfig;
@@ -107,21 +119,8 @@ public class PullDependencies implements Runnable
   public List<String> coordinates = new ArrayList<>();
 
   @Option(
-      name = {"-h", "--hadoop-coordinate"},
-      title = "hadoop coordinate",
-      description = "Hadoop dependency to pull down, followed by a maven coordinate, e.g. org.apache.hadoop:hadoop-client:2.4.0"
-  )
-  public List<String> hadoopCoordinates = new ArrayList<>();
-
-  @Option(
-      name = "--no-default-hadoop",
-      description = "Don't pull down the default hadoop coordinate, i.e., org.apache.hadoop:hadoop-client-runtime if hadoop3. If `-h` option is supplied, then default hadoop coordinate will not be downloaded."
-  )
-  public boolean noDefaultHadoop = false;
-
-  @Option(
       name = "--clean",
-      title = "Remove exisiting extension and hadoop dependencies directories before pulling down dependencies."
+      title = "Remove exisiting extension directories before pulling down dependencies."
   )
   public boolean clean = false;
 
@@ -181,39 +180,45 @@ public class PullDependencies implements Runnable
   @SuppressWarnings("unused")  // used by com.github.rvesse.airline
   public PullDependencies()
   {
-    hadoopExclusions = Dependencies.builder()
-                                   .putAll(PROVIDED_BY_CORE_DEPENDENCIES)
-                                   .putAll(SECURITY_VULNERABILITY_EXCLUSIONS)
-                                   .build();
   }
 
   // Used for testing only
   PullDependencies(
       RepositorySystem repositorySystem,
       RepositorySystemSession repositorySystemSession,
-      ExtensionsConfig extensionsConfig,
-      Dependencies hadoopExclusions
+      ExtensionsConfig extensionsConfig
   )
   {
     this.repositorySystem = repositorySystem;
     this.repositorySystemSession = repositorySystemSession;
     this.extensionsConfig = extensionsConfig;
-    this.hadoopExclusions = hadoopExclusions;
   }
 
   private RepositorySystem getRepositorySystem()
   {
-    DefaultServiceLocator locator = MavenRepositorySystemUtils.newServiceLocator();
-    locator.addService(RepositoryConnectorFactory.class, BasicRepositoryConnectorFactory.class);
-    locator.addService(TransporterFactory.class, HttpTransporterFactory.class);
-    return locator.getService(RepositorySystem.class);
+    // RepositorySystemSupplier (maven-resolver-supplier-mvn3) replaces the pre-2.0
+    // DefaultServiceLocator/ServiceLocator bootstrap. It wires up the basic repository
+    // connector and the Apache HTTP transporter out of the box.
+    return new RepositorySystemSupplier().get();
   }
 
   protected RepositorySystemSession getRepositorySystemSession()
   {
-    DefaultRepositorySystemSession session = MavenRepositorySystemUtils.newSession();
-    LocalRepository localRepo = new LocalRepository(localRepository);
-    session.setLocalRepositoryManager(repositorySystem.newLocalRepositoryManager(session, localRepo));
+    // SessionBuilderSupplier (maven-resolver-supplier-mvn3) sets up Maven-equivalent
+    // DependencySelector/DependencyManager/DependencyTraverser defaults on the builder -
+    // in particular, the scope-based selector that keeps a dependency's own "test"/"provided"
+    // scoped and optional dependencies from propagating transitively, matching real Maven
+    // resolution behavior. A bare repositorySystem.createSessionBuilder() has none of that,
+    // and will walk into every transitive branch (e.g. druid-processing's test-scope
+    // equalsverifier dependency and its own dead/unreachable declared repositories).
+    RepositorySystemSession.SessionBuilder sessionBuilder = new SessionBuilderSupplier(repositorySystem).get()
+                                                                                                          .withLocalRepositoryBaseDirectories(Path.of(localRepository))
+                                                                                                          // Some artifacts' POMs (e.g. those inheriting from org.apache.commons:commons-parent)
+                                                                                                          // use JDK-version-conditional <profiles>. The model builder invoked while
+                                                                                                          // resolving descriptors needs "java.version" (and friends) to evaluate those
+                                                                                                          // profile activations; without this the build fails with
+                                                                                                          // "Failed to determine Java version for profile ...".
+                                                                                                          .setSystemProperties(System.getProperties());
 
     // Set up the proxy configuration if required
     if (useProxy) {
@@ -230,10 +235,10 @@ public class PullDependencies implements Runnable
       final DefaultProxySelector proxySelector = new DefaultProxySelector();
       proxySelector.add(proxy, null);
 
-      session.setProxySelector(proxySelector);
+      sessionBuilder.setProxySelector(proxySelector);
     }
 
-    return session;
+    return sessionBuilder.build();
   }
 
   protected List<RemoteRepository> getRemoteRepositories()
@@ -259,15 +264,12 @@ public class PullDependencies implements Runnable
     }
 
     final File extensionsDir = new File(extensionsConfig.getDirectory());
-    final File hadoopDependenciesDir = new File(extensionsConfig.getHadoopDependenciesDir());
 
     try {
       if (clean) {
         FileUtils.deleteDirectory(extensionsDir);
-        FileUtils.deleteDirectory(hadoopDependenciesDir);
       }
       FileUtils.mkdirp(extensionsDir);
-      FileUtils.mkdirp(hadoopDependenciesDir);
     }
     catch (IOException e) {
       log.error(e, "Unable to clear or create extension directory at [%s]", extensionsDir);
@@ -292,25 +294,6 @@ public class PullDependencies implements Runnable
         downloadExtension(versionedArtifact, currExtensionDir);
       }
       log.info("Finish downloading dependencies for extension coordinates: [%s]", coordinates);
-
-      if (!noDefaultHadoop && hadoopCoordinates.isEmpty()) {
-        hadoopCoordinates.addAll(HadoopTaskConfig.DEFAULT_DEFAULT_HADOOP_COORDINATES);
-      }
-
-      log.info("Start downloading dependencies for hadoop extension coordinates: [%s]", hadoopCoordinates);
-      for (final String hadoopCoordinate : hadoopCoordinates) {
-        final Artifact versionedArtifact = getArtifact(hadoopCoordinate);
-
-        File currExtensionDir = new File(hadoopDependenciesDir, versionedArtifact.getArtifactId());
-        createExtensionDirectory(hadoopCoordinate, currExtensionDir);
-
-        // add a version folder for hadoop dependency directory
-        currExtensionDir = new File(currExtensionDir, versionedArtifact.getVersion());
-        createExtensionDirectory(hadoopCoordinate, currExtensionDir);
-
-        downloadExtension(versionedArtifact, currExtensionDir, hadoopExclusions);
-      }
-      log.info("Finish downloading dependencies for hadoop extension coordinates: [%s]", hadoopCoordinates);
     }
     catch (Exception e) {
       throw new RuntimeException(e);

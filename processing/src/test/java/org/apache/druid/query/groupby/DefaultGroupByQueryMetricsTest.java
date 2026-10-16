@@ -25,9 +25,10 @@ import org.apache.druid.java.util.common.granularity.PeriodGranularity;
 import org.apache.druid.java.util.metrics.StubServiceEmitter;
 import org.apache.druid.query.DefaultQueryMetricsTest;
 import org.apache.druid.query.DruidMetrics;
-import org.apache.druid.query.QueryContexts;
+import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryRunnerTestHelper;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.dimension.ExtractionDimensionSpec;
 import org.apache.druid.query.extraction.MapLookupExtractor;
 import org.apache.druid.query.filter.SelectorDimFilter;
@@ -35,8 +36,8 @@ import org.apache.druid.query.lookup.LookupExtractionFn;
 import org.apache.druid.testing.InitializedNullHandlingTest;
 import org.joda.time.Interval;
 import org.joda.time.Period;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.Map;
@@ -69,34 +70,34 @@ public class DefaultGroupByQueryMetricsTest extends InitializedNullHandlingTest
         )).setAggregatorSpecs(QueryRunnerTestHelper.ROWS_COUNT, new LongSumAggregatorFactory("idx", "index"))
         .setGranularity(new PeriodGranularity(new Period("P1M"), null, null))
         .setDimFilter(new SelectorDimFilter("quality", "mezzanine", null))
-        .setContext(ImmutableMap.of(QueryContexts.BY_SEGMENT_KEY, true));
+        .setContext(QueryContext.ofMap(QueryContextParameters.BY_SEGMENT, true));
     GroupByQuery query = builder.build();
     queryMetrics.query(query);
 
     queryMetrics.reportQueryTime(0).emit(serviceEmitter);
     Map<String, Object> actualEvent = serviceEmitter.getEvents().get(0).toMap();
-    Assert.assertEquals(16, actualEvent.size());
-    Assert.assertTrue(actualEvent.containsKey("feed"));
-    Assert.assertTrue(actualEvent.containsKey("timestamp"));
-    Assert.assertEquals("localhost", actualEvent.get("host"));
-    Assert.assertEquals("testing", actualEvent.get("service"));
-    Assert.assertEquals(QueryRunnerTestHelper.DATA_SOURCE, actualEvent.get(DruidMetrics.DATASOURCE));
-    Assert.assertEquals(query.getType(), actualEvent.get(DruidMetrics.TYPE));
+    Assertions.assertEquals(16, actualEvent.size());
+    Assertions.assertTrue(actualEvent.containsKey("feed"));
+    Assertions.assertTrue(actualEvent.containsKey("timestamp"));
+    Assertions.assertEquals("localhost", actualEvent.get("host"));
+    Assertions.assertEquals("testing", actualEvent.get("service"));
+    Assertions.assertEquals(QueryRunnerTestHelper.DATA_SOURCE, actualEvent.get(DruidMetrics.DATASOURCE));
+    Assertions.assertEquals(query.getType(), actualEvent.get(DruidMetrics.TYPE));
     Interval expectedInterval = Intervals.of("2011-04-02/2011-04-04");
-    Assert.assertEquals(Collections.singletonList(expectedInterval.toString()), actualEvent.get(DruidMetrics.INTERVAL));
-    Assert.assertEquals("true", actualEvent.get("hasFilters"));
-    Assert.assertEquals(expectedInterval.toDuration().toString(), actualEvent.get("duration"));
-    Assert.assertEquals("", actualEvent.get(DruidMetrics.ID));
-    Assert.assertEquals(ImmutableMap.of(QueryContexts.BY_SEGMENT_KEY, true), actualEvent.get("context"));
+    Assertions.assertEquals(Collections.singletonList(expectedInterval.toString()), actualEvent.get(DruidMetrics.INTERVAL));
+    Assertions.assertEquals("true", actualEvent.get("hasFilters"));
+    Assertions.assertEquals(expectedInterval.toDuration().toString(), actualEvent.get("duration"));
+    Assertions.assertEquals("", actualEvent.get(DruidMetrics.ID));
+    Assertions.assertEquals(QueryContext.ofMap(QueryContextParameters.BY_SEGMENT, true), actualEvent.get("context"));
 
     // GroupBy-specific dimensions
-    Assert.assertEquals("1", actualEvent.get("numDimensions"));
-    Assert.assertEquals("2", actualEvent.get("numMetrics"));
-    Assert.assertEquals("0", actualEvent.get("numComplexMetrics"));
+    Assertions.assertEquals("1", actualEvent.get("numDimensions"));
+    Assertions.assertEquals("2", actualEvent.get("numMetrics"));
+    Assertions.assertEquals("0", actualEvent.get("numComplexMetrics"));
 
     // Metric
-    Assert.assertEquals("query/time", actualEvent.get("metric"));
-    Assert.assertEquals(0L, actualEvent.get("value"));
+    Assertions.assertEquals("query/time", actualEvent.get("metric"));
+    Assertions.assertEquals(0L, actualEvent.get("value"));
   }
 
   @Test

@@ -23,22 +23,23 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import nl.jqno.equalsverifier.EqualsVerifier;
+import org.apache.druid.math.expr.Parser;
+import org.apache.druid.query.filter.DimFilters;
+import org.apache.druid.query.filter.TrueDimFilter;
+import org.apache.druid.query.policy.NoRestrictionPolicy;
 import org.apache.druid.segment.TestHelper;
+import org.apache.druid.segment.VirtualColumns;
 import org.apache.druid.segment.column.RowSignature;
-import org.apache.druid.segment.join.NoopDataSource;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 public class UnionDataSourceTest
 {
-  @Rule
-  public ExpectedException expectedException = ExpectedException.none();
-
   private final UnionDataSource unionDataSource = new UnionDataSource(
       ImmutableList.of(
           new TableDataSource("foo"),
@@ -67,49 +68,85 @@ public class UnionDataSourceTest
   @Test
   public void test_constructor_empty()
   {
-    expectedException.expect(IllegalStateException.class);
-    expectedException.expectMessage("'dataSources' must be non-null and non-empty for 'union'");
-
-    //noinspection ResultOfObjectAllocationIgnored
-    new UnionDataSource(Collections.emptyList());
-  }
-
-  @Test
-  public void test_isCompatible()
-  {
-    TableDataSource tableDataSource = new TableDataSource("foo");
-    InlineDataSource inlineDataSource = InlineDataSource.fromIterable(Collections.emptyList(), RowSignature.empty());
-
-    Assert.assertTrue(UnionDataSource.isCompatibleDataSource(tableDataSource));
-    Assert.assertTrue(UnionDataSource.isCompatibleDataSource(inlineDataSource));
-    Assert.assertFalse(UnionDataSource.isCompatibleDataSource(new NoopDataSource()));
+    IllegalStateException e = Assertions.assertThrows(
+        IllegalStateException.class,
+        //noinspection ResultOfObjectAllocationIgnored
+        () -> new UnionDataSource(Collections.emptyList())
+    );
+    Assertions.assertTrue(e.getMessage().contains("'dataSources' must be non-null and non-empty for 'union'"));
   }
 
   @Test
   public void test_isTableBased()
   {
-    Assert.assertTrue(unionDataSource.isTableBased());
-    Assert.assertTrue(unionDataSourceWithDuplicates.isTableBased());
+    Assertions.assertTrue(unionDataSource.isTableBased());
+    Assertions.assertTrue(unionDataSourceWithDuplicates.isTableBased());
 
-    Assert.assertFalse(tableAndInlineUniondataSource.isTableBased());
+    Assertions.assertFalse(tableAndInlineUniondataSource.isTableBased());
+  }
+
+  @Test
+  public void test_isTableBased_decoratedArms()
+  {
+    // Arms may decorate tables.
+    final DataSource decoratedTable = new ProjectDataSource(
+        FilteredDataSource.create(
+            RestrictedDataSource.create(new TableDataSource("foo"), NoRestrictionPolicy.instance()),
+            TrueDimFilter.instance()
+        ),
+        VirtualColumns.EMPTY
+    );
+    Assertions.assertTrue(new UnionDataSource(List.of(decoratedTable, new TableDataSource("bar"))).isTableBased());
+
+    // But not inline data.
+    final DataSource decoratedInline = FilteredDataSource.create(
+        InlineDataSource.fromIterable(Collections.emptyList(), RowSignature.empty()),
+        TrueDimFilter.instance()
+    );
+    Assertions.assertFalse(new UnionDataSource(List.of(decoratedInline, new TableDataSource("bar"))).isTableBased());
+
+    // Nor a subquery, even one that reads tables, since it cannot be run as-is.
+    final DataSource subquery =
+        new QueryDataSource(Druids.newScanQueryBuilder().dataSource("foo").eternityInterval().build());
+    Assertions.assertFalse(new UnionDataSource(List.of(subquery, new TableDataSource("bar"))).isTableBased());
   }
 
   @Test
   public void test_getTableNames()
   {
-    Assert.assertEquals(ImmutableSet.of("foo", "bar"), unionDataSource.getTableNames());
+    Assertions.assertEquals(ImmutableSet.of("foo", "bar"), unionDataSource.getTableNames());
   }
 
   @Test
   public void test_getTableNames_withDuplicates()
   {
-    Assert.assertEquals(ImmutableSet.of("foo", "bar"), unionDataSourceWithDuplicates.getTableNames());
+    Assertions.assertEquals(ImmutableSet.of("foo", "bar"), unionDataSourceWithDuplicates.getTableNames());
+  }
+
+  @Test
+  public void test_getReservedColumns()
+  {
+    Assertions.assertEquals(Set.of(), unionDataSource.getReservedColumns());
+
+    // Names reserved by any arm are reserved.
+    Assertions.assertEquals(
+        Set.of("v0", "dim1", "dim2"),
+        new UnionDataSource(
+            ImmutableList.of(
+                new ProjectDataSource(
+                    new TableDataSource("foo"),
+                    VirtualColumns.create(new ExpressionVirtualColumn("v0", Parser.identifier("dim1"), null))
+                ),
+                FilteredDataSource.create(new TableDataSource("bar"), DimFilters.dimEquals("dim2", "x"))
+            )
+        ).getReservedColumns()
+    );
   }
 
   @Test
   public void test_getChildren()
   {
-    Assert.assertEquals(
+    Assertions.assertEquals(
         ImmutableList.of(new TableDataSource("foo"), new TableDataSource("bar")),
         unionDataSource.getChildren()
     );
@@ -118,7 +155,7 @@ public class UnionDataSourceTest
   @Test
   public void test_getChildren_withDuplicates()
   {
-    Assert.assertEquals(
+    Assertions.assertEquals(
         ImmutableList.of(new TableDataSource("bar"), new TableDataSource("foo"), new TableDataSource("bar")),
         unionDataSourceWithDuplicates.getChildren()
     );
@@ -127,29 +164,30 @@ public class UnionDataSourceTest
   @Test
   public void test_isCacheable()
   {
-    Assert.assertFalse(unionDataSource.isCacheable(true));
-    Assert.assertFalse(unionDataSource.isCacheable(false));
+    Assertions.assertFalse(unionDataSource.isCacheable(true));
+    Assertions.assertFalse(unionDataSource.isCacheable(false));
   }
 
   @Test
   public void test_isGlobal()
   {
-    Assert.assertFalse(unionDataSource.isGlobal());
+    Assertions.assertFalse(unionDataSource.isGlobal());
   }
 
   @Test
   public void test_isConcrete()
   {
-    Assert.assertTrue(unionDataSource.isProcessable());
+    Assertions.assertTrue(unionDataSource.isProcessable());
   }
 
   @Test
   public void test_withChildren_empty()
   {
-    expectedException.expect(IllegalArgumentException.class);
-    expectedException.expectMessage("Expected [2] children, got [0]");
-
-    unionDataSource.withChildren(Collections.emptyList());
+    IllegalArgumentException e = Assertions.assertThrows(
+        IllegalArgumentException.class,
+        () -> unionDataSource.withChildren(Collections.emptyList())
+    );
+    Assertions.assertTrue(e.getMessage().contains("Expected [2] children, got [0]"));
   }
 
   @Test
@@ -161,7 +199,7 @@ public class UnionDataSourceTest
     );
 
     //noinspection unchecked
-    Assert.assertEquals(
+    Assertions.assertEquals(
         new UnionDataSource(newDataSources),
         unionDataSource.withChildren(newDataSources)
     );
@@ -182,6 +220,6 @@ public class UnionDataSourceTest
         DataSource.class
     );
 
-    Assert.assertEquals(unionDataSource, deserialized);
+    Assertions.assertEquals(unionDataSource, deserialized);
   }
 }

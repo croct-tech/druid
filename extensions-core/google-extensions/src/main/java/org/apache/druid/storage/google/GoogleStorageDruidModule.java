@@ -32,6 +32,7 @@ import com.google.inject.Provides;
 import com.google.inject.multibindings.MapBinder;
 import org.apache.druid.data.SearchableVersionedDataFinder;
 import org.apache.druid.data.input.google.GoogleCloudStorageInputSource;
+import org.apache.druid.data.input.google.GoogleCloudStorageInputSourceFactory;
 import org.apache.druid.guice.Binders;
 import org.apache.druid.guice.JsonConfigProvider;
 import org.apache.druid.guice.LazySingleton;
@@ -74,7 +75,8 @@ public class GoogleStorageDruidModule implements DruidModule
           }
         },
         new SimpleModule().registerSubtypes(
-            new NamedType(GoogleCloudStorageInputSource.class, SCHEME)
+            new NamedType(GoogleCloudStorageInputSource.class, SCHEME),
+            new NamedType(GoogleCloudStorageInputSourceFactory.class, SCHEME)
         )
     );
   }
@@ -114,7 +116,7 @@ public class GoogleStorageDruidModule implements DruidModule
   }
 
   /**
-   * Returns a GoogleStorage that lazily initialize {@link {@link Storage}}.
+   * Returns a GoogleStorage that lazily initialize {@link Storage}.
    * This is to avoid immediate config validation but defer it until you actually use the client.
    */
   @Provides

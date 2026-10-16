@@ -41,14 +41,7 @@ import { ResultTablePane } from '../result-table-pane/result-table-pane';
 import './execution-details-pane.scss';
 
 export type ExecutionDetailsTab =
-  | 'general'
-  | 'sql'
-  | 'native'
-  | 'result'
-  | 'pages'
-  | 'error'
-  | 'warnings'
-  | 'segmentStatus';
+  'general' | 'sql' | 'native' | 'result' | 'pages' | 'error' | 'warnings' | 'segmentStatus';
 
 interface ExecutionDetailsPaneProps {
   execution: Execution;
@@ -70,7 +63,13 @@ export const ExecutionDetailsPane = React.memo(function ExecutionDetailsPane(
         return (
           <div className="execution-details-pane-general">
             <p>
-              General info for <Tag minimal>{execution.id}</Tag>
+              General info for execution ID: <Tag minimal>{execution.id}</Tag>
+              {execution.sqlQueryId && (
+                <>
+                  {' '}
+                  (SQL ID <Tag minimal>{execution.sqlQueryId}</Tag>)
+                </>
+              )}
               {ingestDatasource && (
                 <>
                   {' '}
@@ -117,7 +116,8 @@ export const ExecutionDetailsPane = React.memo(function ExecutionDetailsPane(
                 ? String(execution.sqlQuery)
                 : JSONBig.stringify(execution.nativeQuery, undefined, 2)
             }
-            leaveBackground
+            readOnly
+            transparentBackground={false}
           />
         );
 

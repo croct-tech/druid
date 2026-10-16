@@ -101,9 +101,9 @@ setKey() {
     service_conf=$(getConfPath $service)/runtime.properties
     # Delete from all
     sed -ri "/$key=/d" $COMMON_CONF_DIR/common.runtime.properties
-    [ -f $service_conf ] && sed -ri "/$key=/d" $service_conf
-    [ -f $service_conf ] && echo -e "\n$key=$value" >>$service_conf
-    [ -f $service_conf ] || echo -e "\n$key=$value" >>$COMMON_CONF_DIR/common.runtime.properties
+    [ -f "$service_conf" ] && sed -ri "/$key=/d" $service_conf
+    [ -f "$service_conf" ] && printf '\n%s=%s\n' "$key" "$value" >> "$service_conf"
+    [ -f "$service_conf" ] || printf '\n%s=%s\n' "$key" "$value" >> "$COMMON_CONF_DIR/common.runtime.properties"
 
     echo "Setting $key=$value in $service_conf"
 }
@@ -212,7 +212,7 @@ then
     echo "$DRUID_SERVICE_LOG4J" >$SERVICE_CONF_DIR/log4j2.xml
 fi
 
-DRUID_DIRS_TO_CREATE=${DRUID_DIRS_TO_CREATE-'var/tmp var/druid/segments var/druid/indexing-logs var/druid/task var/druid/hadoop-tmp var/druid/segment-cache'}
+DRUID_DIRS_TO_CREATE=${DRUID_DIRS_TO_CREATE-'var/tmp var/druid/segments var/druid/indexing-logs var/druid/task var/druid/segment-cache'}
 if [ -n "${DRUID_DIRS_TO_CREATE}" ]
 then
     mkdir -p ${DRUID_DIRS_TO_CREATE}

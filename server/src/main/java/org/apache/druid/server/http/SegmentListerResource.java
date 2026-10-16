@@ -43,8 +43,6 @@ import org.apache.druid.server.http.security.StateResourceFilter;
 
 import javax.annotation.Nullable;
 import javax.servlet.AsyncContext;
-import javax.servlet.AsyncEvent;
-import javax.servlet.AsyncListener;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.Consumes;
@@ -97,10 +95,10 @@ public class SegmentListerResource
    * Here is how, this is used.
    *
    * (1) Client sends first request /druid/internal/v1/segments?counter=-1&timeout=<timeout>
-   * Server responds with list of segments currently served and a <counter,hash> pair.
+   * Server responds with list of segments currently served and a {@code <counter,hash>} pair.
    *
    * (2) Client sends subsequent requests /druid/internal/v1/segments?counter=<counter>&hash=<hash>&timeout=<timeout>
-   * Where <counter,hash> values are used from the last response. Server responds with list of segment updates
+   * Where {@code <counter,hash>} values are used from the last response. Server responds with list of segment updates
    * since given counter.
    *
    * This endpoint makes the client wait till either there is some segment update or given timeout elapses.
@@ -146,32 +144,11 @@ public class SegmentListerResource
     final AsyncContext asyncContext = req.startAsync();
 
     asyncContext.addListener(
-        new AsyncListener()
-        {
-          @Override
-          public void onComplete(AsyncEvent event)
-          {
-          }
-
-          @Override
-          public void onTimeout(AsyncEvent event)
-          {
-
-            // HTTP 204 NO_CONTENT is sent to the client.
-            future.cancel(true);
-            event.getAsyncContext().complete();
-          }
-
-          @Override
-          public void onError(AsyncEvent event)
-          {
-          }
-
-          @Override
-          public void onStartAsync(AsyncEvent event)
-          {
-          }
-        }
+        ServletResourceUtils.createAsyncTimeoutListener(event -> {
+          // HTTP 204 NO_CONTENT is sent to the client.
+          future.cancel(true);
+          event.getAsyncContext().complete();
+        })
     );
 
     Futures.addCallback(
@@ -260,32 +237,11 @@ public class SegmentListerResource
     final AsyncContext asyncContext = req.startAsync();
 
     asyncContext.addListener(
-        new AsyncListener()
-        {
-          @Override
-          public void onComplete(AsyncEvent event)
-          {
-          }
-
-          @Override
-          public void onTimeout(AsyncEvent event)
-          {
-
-            // HTTP 204 NO_CONTENT is sent to the client.
-            future.cancel(true);
-            event.getAsyncContext().complete();
-          }
-
-          @Override
-          public void onError(AsyncEvent event)
-          {
-          }
-
-          @Override
-          public void onStartAsync(AsyncEvent event)
-          {
-          }
-        }
+        ServletResourceUtils.createAsyncTimeoutListener(event -> {
+          // HTTP 204 NO_CONTENT is sent to the client.
+          future.cancel(true);
+          event.getAsyncContext().complete();
+        })
     );
 
     Futures.addCallback(

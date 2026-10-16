@@ -20,10 +20,10 @@
 package org.apache.druid.indexing.seekablestream.common;
 
 import com.google.common.annotations.Beta;
+import jakarta.validation.constraints.NotNull;
 import org.apache.druid.data.input.impl.ByteEntity;
 
 import javax.annotation.Nullable;
-import javax.validation.constraints.NotNull;
 import java.io.Closeable;
 import java.util.Collection;
 import java.util.List;
@@ -146,11 +146,12 @@ public interface RecordSupplier<PartitionIdType, SequenceOffsetType, RecordType 
    * Average poll-to-idle ratio as reported by the stream consumer.
    * A value of 0 represents that the consumer is never idle, i.e. always consuming.
    * A value of 1 represents that the consumer is always idle, i.e. not receiving data.
+   * A negative value indicates that no valid metric is available.
    * Used by the supervisor auto-scaler to find an optimal task count that minimizes idle time.
    */
   default double getPollIdleRatioMetric()
   {
-    throw new UnsupportedOperationException();
+    return -1;
   }
 
   /**

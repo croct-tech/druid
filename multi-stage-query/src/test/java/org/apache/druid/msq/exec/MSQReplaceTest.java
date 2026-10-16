@@ -56,16 +56,20 @@ import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.query.DruidMetrics;
 import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.aggregation.AggregatorFactory;
+import org.apache.druid.query.expression.TestExprMacroTable;
 import org.apache.druid.query.filter.NotDimFilter;
 import org.apache.druid.query.filter.NullFilter;
 import org.apache.druid.query.filter.RangeFilter;
 import org.apache.druid.segment.IndexSpec;
+import org.apache.druid.segment.VirtualColumns;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.transform.CompactionTransformSpec;
+import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
 import org.apache.druid.sql.calcite.util.CalciteTests;
 import org.apache.druid.timeline.CompactionState;
 import org.apache.druid.timeline.DataSegment;
+import org.apache.druid.timeline.SegmentDetail;
 import org.apache.druid.timeline.SegmentId;
 import org.apache.druid.timeline.partition.DimensionRangeShardSpec;
 import org.apache.druid.timeline.partition.NumberedShardSpec;
@@ -111,7 +115,7 @@ public class MSQReplaceTest extends MSQTestBase
         {PARALLEL_MERGE, PARALLEL_MERGE_MSQ_CONTEXT},
         {SUPERUSER, SUPERUSER_MSQ_CONTEXT},
         {WITH_REPLACE_LOCK_AND_COMPACTION_STATE, QUERY_CONTEXT_WITH_REPLACE_LOCK_AND_COMPACTION_STATE}
-        };
+    };
     return Arrays.asList(data);
   }
 
@@ -141,7 +145,11 @@ public class MSQReplaceTest extends MSQTestBase
     Mockito.doCallRealMethod()
            .doReturn(ImmutableSet.of(existingDataSegment0, existingDataSegment1))
            .when(testTaskActionClient)
-           .submit(new RetrieveUsedSegmentsAction("foo", ImmutableList.of(Intervals.ETERNITY)));
+           .submit(new RetrieveUsedSegmentsAction(
+               "foo",
+               ImmutableList.of(Intervals.ETERNITY),
+               SegmentDetail.none()
+           ));
 
     testIngestQuery().setSql(" REPLACE INTO foo OVERWRITE ALL "
                              + "SELECT __time, m1 "
@@ -232,7 +240,11 @@ public class MSQReplaceTest extends MSQTestBase
     Mockito.doCallRealMethod()
            .doReturn(ImmutableSet.of(existingDataSegment0, existingDataSegment1))
            .when(testTaskActionClient)
-           .submit(new RetrieveUsedSegmentsAction("foo", ImmutableList.of(Intervals.ETERNITY)));
+           .submit(new RetrieveUsedSegmentsAction(
+               "foo",
+               ImmutableList.of(Intervals.ETERNITY),
+               SegmentDetail.none()
+           ));
 
     testIngestQuery().setSql(" REPLACE INTO foo OVERWRITE ALL "
                              + "SELECT __time, dim1, m1 "
@@ -312,7 +324,11 @@ public class MSQReplaceTest extends MSQTestBase
     Mockito.doCallRealMethod()
            .doReturn(ImmutableSet.of(existingDataSegment0, existingDataSegment1))
            .when(testTaskActionClient)
-           .submit(new RetrieveUsedSegmentsAction("foo", ImmutableList.of(Intervals.ETERNITY)));
+           .submit(new RetrieveUsedSegmentsAction(
+               "foo",
+               ImmutableList.of(Intervals.ETERNITY),
+               SegmentDetail.none()
+           ));
 
     testIngestQuery().setSql(" REPLACE INTO foo OVERWRITE ALL "
                              + "SELECT __time, dim1, m1 "
@@ -328,7 +344,7 @@ public class MSQReplaceTest extends MSQTestBase
                              SegmentId.of("foo", Intervals.ETERNITY, "test", 0)
                          )
                      )
-                     .setExpectedShardSpec(NumberedShardSpec.class)
+                     .setExpectedShardSpec(DimensionRangeShardSpec.class)
                      .setExpectedResultRows(
                          ImmutableList.of(
                              new Object[]{946684800000L, "", 1.0f},
@@ -347,7 +363,7 @@ public class MSQReplaceTest extends MSQTestBase
                      .setExpectedLastCompactionState(
                          expectedCompactionState(
                              context,
-                             Collections.emptyList(),
+                             List.of("v0"),
                              DimensionsSpec.builder()
                                            .setDimensions(
                                                ImmutableList.of(
@@ -357,13 +373,24 @@ public class MSQReplaceTest extends MSQTestBase
                                            )
                                            .setDimensionExclusions(Collections.singletonList("__time"))
                                            .build(),
+                             new CompactionTransformSpec(
+                                 null,
+                                 VirtualColumns.create(
+                                     new ExpressionVirtualColumn(
+                                         "v0",
+                                         "lower(\"dim1\")",
+                                         ColumnType.STRING,
+                                         TestExprMacroTable.INSTANCE
+                                     )
+                                 )
+                             ),
                              GranularityType.ALL,
                              Intervals.ETERNITY
                          )
                      )
                      .verifyResults();
   }
-
+  
   @MethodSource("data")
   @ParameterizedTest(name = "{index}:with context {0}")
   public void testReplaceOnFooWithAllClusteredByExpression(String contextName, Map<String, Object> context)
@@ -394,7 +421,11 @@ public class MSQReplaceTest extends MSQTestBase
     Mockito.doCallRealMethod()
            .doReturn(ImmutableSet.of(existingDataSegment0, existingDataSegment1))
            .when(testTaskActionClient)
-           .submit(new RetrieveUsedSegmentsAction("foo", ImmutableList.of(Intervals.ETERNITY)));
+           .submit(new RetrieveUsedSegmentsAction(
+               "foo",
+               ImmutableList.of(Intervals.ETERNITY),
+               SegmentDetail.none()
+           ));
 
     testIngestQuery().setSql(" REPLACE INTO foo OVERWRITE ALL "
                              + "SELECT __time, dim1, m1 "
@@ -480,7 +511,11 @@ public class MSQReplaceTest extends MSQTestBase
     Mockito.doCallRealMethod()
            .doReturn(ImmutableSet.of(existingDataSegment0, existingDataSegment1))
            .when(testTaskActionClient)
-           .submit(new RetrieveUsedSegmentsAction("foo", ImmutableList.of(Intervals.ETERNITY)));
+           .submit(new RetrieveUsedSegmentsAction(
+               "foo",
+               ImmutableList.of(Intervals.ETERNITY),
+               SegmentDetail.none()
+           ));
 
     testIngestQuery().setSql(" REPLACE INTO foo OVERWRITE ALL "
                              + "SELECT __time, dim1, m1 "
@@ -606,7 +641,11 @@ public class MSQReplaceTest extends MSQTestBase
     Mockito.doCallRealMethod()
            .doReturn(ImmutableSet.of(existingDataSegment0, existingDataSegment1))
            .when(testTaskActionClient)
-           .submit(new RetrieveUsedSegmentsAction("foo", ImmutableList.of(Intervals.ETERNITY)));
+           .submit(new RetrieveUsedSegmentsAction(
+               "foo",
+               ImmutableList.of(Intervals.ETERNITY),
+               SegmentDetail.none()
+           ));
 
     testIngestQuery().setSql(" REPLACE INTO foo OVERWRITE ALL "
                              + "SELECT __time, dim1, m1 "
@@ -1133,7 +1172,11 @@ public class MSQReplaceTest extends MSQTestBase
     Mockito.doCallRealMethod()
            .doReturn(ImmutableSet.of(existingDataSegment0, existingDataSegment1))
            .when(testTaskActionClient)
-           .submit(new RetrieveUsedSegmentsAction("foo", ImmutableList.of(Intervals.ETERNITY)));
+           .submit(new RetrieveUsedSegmentsAction(
+               "foo",
+               ImmutableList.of(Intervals.ETERNITY),
+               SegmentDetail.none()
+           ));
 
 
     testIngestQuery().setSql(" REPLACE INTO foo "
@@ -1216,7 +1259,11 @@ public class MSQReplaceTest extends MSQTestBase
 
     Mockito.doReturn(ImmutableSet.of(existingDataSegment0))
            .when(testTaskActionClient)
-           .submit(new RetrieveUsedSegmentsAction("foo", ImmutableList.of(Intervals.of("2000-01-01/2000-03-01"))));
+           .submit(new RetrieveUsedSegmentsAction(
+               "foo",
+               ImmutableList.of(Intervals.of("2000-01-01/2000-03-01")),
+               SegmentDetail.none()
+           ));
 
     testIngestQuery().setSql(" REPLACE INTO foo "
                              + "OVERWRITE WHERE __time >= TIMESTAMP '2000-01-01' AND __time < TIMESTAMP '2000-03-01' "
@@ -1305,7 +1352,8 @@ public class MSQReplaceTest extends MSQTestBase
            .when(testTaskActionClient)
            .submit(new RetrieveUsedSegmentsAction(
                EasyMock.eq("foo"),
-               EasyMock.eq(ImmutableList.of(Intervals.of("2000-01-01/2002-01-01")))
+               EasyMock.eq(ImmutableList.of(Intervals.of("2000-01-01/2002-01-01"))),
+               SegmentDetail.none()
            ));
 
 
@@ -1485,7 +1533,8 @@ public class MSQReplaceTest extends MSQTestBase
            .when(testTaskActionClient)
            .submit(new RetrieveUsedSegmentsAction(
                EasyMock.eq("foo"),
-               EasyMock.eq(ImmutableList.of(Intervals.of("2000-01-01/2000-03-01")))
+               EasyMock.eq(ImmutableList.of(Intervals.of("2000-01-01/2000-03-01"))),
+               SegmentDetail.none()
            ));
 
     testIngestQuery().setSql(" REPLACE INTO foo "
@@ -1599,7 +1648,8 @@ public class MSQReplaceTest extends MSQTestBase
            .when(testTaskActionClient)
            .submit(new RetrieveUsedSegmentsAction(
                EasyMock.eq("foo"),
-               EasyMock.eq(ImmutableList.of(Intervals.of("2000/2002")))
+               EasyMock.eq(ImmutableList.of(Intervals.of("2000/2002"))),
+               SegmentDetail.none()
            ));
 
     testIngestQuery().setSql(" REPLACE INTO foo "
@@ -1658,7 +1708,8 @@ public class MSQReplaceTest extends MSQTestBase
            .when(testTaskActionClient)
            .submit(new RetrieveUsedSegmentsAction(
                EasyMock.eq("foo"),
-               EasyMock.eq(ImmutableList.of(Intervals.ETERNITY))
+               EasyMock.eq(ImmutableList.of(Intervals.ETERNITY)),
+               SegmentDetail.none()
            ));
 
     testIngestQuery().setSql(" REPLACE INTO foo "
@@ -2086,7 +2137,8 @@ public class MSQReplaceTest extends MSQTestBase
            .when(testTaskActionClient)
            .submit(new RetrieveUsedSegmentsAction(
                EasyMock.eq("foo"),
-               EasyMock.eq(ImmutableList.of(Intervals.of("1999/2002")))
+               EasyMock.eq(ImmutableList.of(Intervals.of("1999/2002"))),
+               SegmentDetail.none()
            ));
 
     testIngestQuery().setSql(" REPLACE INTO foo "
@@ -2165,7 +2217,8 @@ public class MSQReplaceTest extends MSQTestBase
            .when(testTaskActionClient)
            .submit(new RetrieveUsedSegmentsAction(
                EasyMock.eq("foo1"),
-               EasyMock.eq(ImmutableList.of(Intervals.of("2000/2002")))
+               EasyMock.eq(ImmutableList.of(Intervals.of("2000/2002"))),
+               SegmentDetail.none()
            ));
 
     List<Object[]> expectedResults = ImmutableList.of(
@@ -2817,10 +2870,30 @@ public class MSQReplaceTest extends MSQTestBase
     return expectedCompactionState(
         context,
         partitionDimensions,
+        dimensions,
+        null,
+        segmentGranularity,
+        interval
+    );
+  }
+
+  private CompactionState expectedCompactionState(
+      Map<String, Object> context,
+      List<String> partitionDimensions,
+      List<DimensionSchema> dimensions,
+      CompactionTransformSpec transformSpec,
+      GranularityType segmentGranularity,
+      Interval interval
+  )
+  {
+    return expectedCompactionState(
+        context,
+        partitionDimensions,
         DimensionsSpec.builder()
                       .setDimensions(dimensions)
                       .setDimensionExclusions(Collections.singletonList("__time"))
                       .build(),
+        transformSpec,
         segmentGranularity,
         interval
     );
@@ -2830,6 +2903,25 @@ public class MSQReplaceTest extends MSQTestBase
       Map<String, Object> context,
       List<String> partitionDimensions,
       DimensionsSpec dimensionsSpec,
+      GranularityType segmentGranularity,
+      Interval interval
+  )
+  {
+    return expectedCompactionState(
+        context,
+        partitionDimensions,
+        dimensionsSpec,
+        null,
+        segmentGranularity,
+        interval
+    );
+  }
+
+  private CompactionState expectedCompactionState(
+      Map<String, Object> context,
+      List<String> partitionDimensions,
+      DimensionsSpec dimensionsSpec,
+      CompactionTransformSpec transformSpec,
       GranularityType segmentGranularity,
       Interval interval
   )
@@ -2862,15 +2954,14 @@ public class MSQReplaceTest extends MSQTestBase
     );
     List<AggregatorFactory> metricsSpec = Collections.emptyList();
 
-    return new CompactionState(
-        partitionsSpec,
-        dimensionsSpec,
-        metricsSpec,
-        null,
-        indexSpec,
-        granularitySpec,
-        null
-    );
+    return CompactionState.builder()
+                          .partitionsSpec(partitionsSpec)
+                          .dimensionsSpec(dimensionsSpec)
+                          .metricsSpec(metricsSpec)
+                          .transformSpec(transformSpec)
+                          .indexSpec(indexSpec)
+                          .granularitySpec(granularitySpec)
+                          .build();
 
   }
 }

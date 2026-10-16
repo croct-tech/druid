@@ -732,7 +732,7 @@ WHERE json_paths(c1) = json_paths(c2);
 SELECT count(*) c
 FROM test_json_cols t1
 INNER JOIN test_json_cols t2 ON json_paths(t1.c1)=json_paths(t2.c1);
-QueryUnsupportedException
+Joining against ARRAY columns is not supported
 !error
 
 #-------------------------------------------------------------------------
@@ -741,7 +741,7 @@ QueryUnsupportedException
 SELECT count(*) c
 FROM test_json_cols t1
 LEFT JOIN test_json_cols t2 ON json_paths(t1.c1)=json_paths(t2.c1);
-QueryUnsupportedException
+Joining against ARRAY columns is not supported
 !error
 
 #-------------------------------------------------------------------------
@@ -751,7 +751,7 @@ SELECT count(*) c
 FROM test_json_cols t1,
      test_json_cols t2
 WHERE json_paths(t1.c1)=json_paths(t2.c1);
-QueryUnsupportedException
+Joining against ARRAY columns is not supported
 !error
 
 #-------------------------------------------------------------------------
@@ -812,6 +812,19 @@ FROM test_json_cols
 UNION ALL
 SELECT json_paths(json_query(c1, '$.a_obj.a_obj')) c
 FROM test_json_cols;
-Query could not be planned
-!error
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| c                                                                                                                                                                                  |
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| [$.a_str, $.a_empty_array, $.a_null, $.a_num_int, $.a_bool, $.a_empty_array_nested[1], $.a_empty_array_nested[2], $.a_empty_obj_nested.o2, $.a_num_float, $.a_empty_obj_nested.o3] |
+| [$.a_str, $.a_empty_array, $.a_null, $.a_num_int, $.a_bool, $.a_empty_array_nested[1], $.a_empty_array_nested[2], $.a_empty_obj_nested.o2, $.a_num_float, $.a_empty_obj_nested.o3] |
+| [$.a_str, $.a_empty_array, $.a_null, $.a_num_int, $.a_bool, $.a_empty_array_nested[1], $.a_empty_array_nested[2], $.a_empty_obj_nested.o2, $.a_num_float, $.a_empty_obj_nested.o3] |
+| [$.a_str, $.a_empty_array, $.a_null, $.a_num_int, $.a_bool, $.a_empty_array_nested[1], $.a_empty_array_nested[2], $.a_empty_obj_nested.o2, $.a_num_float, $.a_empty_obj_nested.o3] |
+| [$]                                                                                                                                                                                |
+| [$]                                                                                                                                                                                |
+| [$]                                                                                                                                                                                |
+| [$]                                                                                                                                                                                |
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+(8 rows)
+
+!ok
 

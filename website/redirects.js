@@ -327,8 +327,15 @@ const Redirects=[
     "to": "/docs/latest/api-reference/sql-api"
   },
   {
+    "from": [
+      "/docs/latest/api-reference/sql-jdbc",
+      "/docs/latest/api-reference/sql-jdbc.html"
+    ],
+    "to": "/docs/latest/querying/sql-jdbc-avatica"
+  },
+  {
     "from":  "/docs/latest/querying/sql-jdbc.html",
-    "to": "/docs/latest/api-reference/sql-jdbc"
+    "to": "/docs/latest/querying/sql-jdbc"
   },
   {
     "from":  "/docs/latest/multi-stage-query/api.html",
@@ -349,6 +356,22 @@ const Redirects=[
   {
     "from": "/docs/latest/development/extensions-core/druid-ranger-security",
     "to": "/docs/latest/development/extensions-contrib/druid-ranger-security"
+  },
+  {
+    "from": "/docs/latest/operations/other-hadoop",
+    "to": "/docs/latest/ingestion/hadoop"
+  },
+  {
+    "from": "/docs/latest/development/extensions-contrib/materialized-view",
+    "to": "/docs/latest/ingestion/hadoop"
+  },
+  {
+    "from": "/docs/latest/tutorials/tutorial-batch-hadoop",
+    "to": "/docs/latest/ingestion/hadoop"
+  },
+  {
+    "from": "/docs/latest/operations/use_sbt_to_build_fat_jar",
+    "to": "/docs/latest/ingestion/hadoop"
   }
 ]
 

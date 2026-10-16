@@ -22,11 +22,12 @@ package org.apache.druid.client.coordinator;
 import com.google.common.util.concurrent.ListenableFuture;
 import org.apache.druid.client.BootstrapSegmentsResponse;
 import org.apache.druid.client.ImmutableSegmentLoadInfo;
-import org.apache.druid.java.util.common.parsers.CloseableIterator;
+import org.apache.druid.collections.ResourceHolder;
 import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.lookup.LookupExtractorFactoryContainer;
 import org.apache.druid.rpc.ServiceRetryPolicy;
 import org.apache.druid.segment.metadata.DataSourceInformation;
+import org.apache.druid.server.broker.BrokerDynamicConfig;
 import org.apache.druid.server.compaction.CompactionStatusResponse;
 import org.apache.druid.server.coordinator.CoordinatorDynamicConfig;
 import org.apache.druid.server.coordinator.rules.Rule;
@@ -36,6 +37,7 @@ import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
 import java.net.URI;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -102,6 +104,15 @@ public interface CoordinatorClient
   ListenableFuture<CoordinatorDynamicConfig> getCoordinatorDynamicConfig();
 
   /**
+   * Gets the latest broker dynamic config from the Coordinator.
+   * Brokers use this to fetch their configuration from the Coordinator on startup.
+   * Returns an empty {@link BrokerDynamicConfig} when querying older coordinators to ensure backwards-compatibility.
+   * <p>
+   * API: {@code GET /druid/coordinator/v1/broker/config}
+   */
+  ListenableFuture<BrokerDynamicConfig> getBrokerDynamicConfig();
+
+  /**
    * Updates the Coordinator dynamic config.
    * <p>
    * API: {@code POST /druid/coordinator/v1/config}
@@ -127,12 +138,14 @@ public interface CoordinatorClient
   /**
    * Returns an iterator over the metadata segments of multiple datasources in the cluster, fetching them in one go.
    * <p>
+   * The caller is responsible for closing the holder.
+   * <p>
    * API: {@code GET /druid/coordinator/v1/metadata/segments?includeOvershadowedStatus}
    *
    * @param watchedDataSources Optional datasources to filter the segments by. If null or empty, all segments are returned.
    * @param includeRealtimeSegments If true, includes realtime segments in the result.
    */
-  ListenableFuture<CloseableIterator<SegmentStatusInCluster>> fetchAllUsedSegmentsWithOvershadowedStatus(
+  ListenableFuture<ResourceHolder<Iterator<SegmentStatusInCluster>>> fetchAllUsedSegmentsWithOvershadowedStatus(
       @Nullable Set<String> watchedDataSources,
       boolean includeRealtimeSegments
   );

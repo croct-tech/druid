@@ -97,6 +97,8 @@ public abstract class CompactionTestBase extends EmbeddedClusterTestBase
 
   protected void verifySegmentsCount(int numExpectedSegments)
   {
+    // The Overlord state is verified immediately; the Broker-side sys.segments view is polled
+    // until it matches, since a single metadata cache sync may still observe the previous state.
     cluster.callApi().verifyNumVisibleSegmentsIs(numExpectedSegments, dataSource, overlord);
   }
 

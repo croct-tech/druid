@@ -65,8 +65,7 @@ FROM test_unnest,
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_unnest",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_unnest"
     } ],
     "processor" : {
       "type" : "scan",
@@ -93,7 +92,6 @@ FROM test_unnest,
         "resultFormat" : "compactedList",
         "columns" : [ "j0.unnest" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -188,8 +186,7 @@ FROM
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_unnest",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_unnest"
     } ],
     "processor" : {
       "type" : "scan",
@@ -216,7 +213,6 @@ FROM
         "resultFormat" : "compactedList",
         "columns" : [ "__time", "c_str", "c_long", "c_float", "c_double", "c_mv_complex", "c_mv_num", "c_mv_complex_with_null_and_empty_val", "c_mv_num_with_null_and_empty_val", "c_mv_complex_with_null_and_empty_row", "c_mv_num_with_null_and_empty_row", "c_mv_all_null_and_empty_val", "j0.unnest" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -327,8 +323,7 @@ GROUP BY c;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_unnest",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_unnest"
     } ],
     "processor" : {
       "type" : "groupByPreShuffle",
@@ -369,7 +364,6 @@ GROUP BY c;
           "type" : "NoopLimitSpec"
         },
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -456,7 +450,6 @@ GROUP BY c;
           "type" : "NoopLimitSpec"
         },
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,

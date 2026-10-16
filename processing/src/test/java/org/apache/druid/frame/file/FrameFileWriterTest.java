@@ -29,13 +29,13 @@ import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.segment.TestIndex;
 import org.apache.druid.segment.incremental.IncrementalIndexCursorFactory;
 import org.apache.druid.testing.InitializedNullHandlingTest;
+import org.apache.druid.testing.TemporaryFolderExtension;
 import org.hamcrest.CoreMatchers;
 import org.hamcrest.MatcherAssert;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.internal.matchers.ThrowableMessageMatcher;
-import org.junit.rules.TemporaryFolder;
+import org.hamcrest.Matchers;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.File;
 import java.io.IOException;
@@ -44,8 +44,8 @@ import java.nio.file.StandardOpenOption;
 
 public class FrameFileWriterTest extends InitializedNullHandlingTest
 {
-  @Rule
-  public TemporaryFolder temporaryFolder = new TemporaryFolder();
+  @RegisterExtension
+  public final TemporaryFolderExtension temporaryFolder = TemporaryFolderExtension.testCaseScoped();
 
   @Test
   public void test_abort_afterAllFrames() throws IOException
@@ -77,11 +77,11 @@ public class FrameFileWriterTest extends InitializedNullHandlingTest
 
     fileWriter.abort();
 
-    final IllegalStateException e = Assert.assertThrows(IllegalStateException.class, () -> FrameFile.open(file, null));
+    final IllegalStateException e = Assertions.assertThrows(IllegalStateException.class, () -> FrameFile.open(file, null));
 
     MatcherAssert.assertThat(
         e,
-        ThrowableMessageMatcher.hasMessage(
+        Matchers.hasProperty("message",
             CoreMatchers.containsString("Corrupt or truncated file[")
         )
     );

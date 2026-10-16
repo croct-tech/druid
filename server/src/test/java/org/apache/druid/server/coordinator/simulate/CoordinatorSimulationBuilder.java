@@ -27,7 +27,6 @@ import com.google.common.util.concurrent.ListenableFuture;
 import org.apache.druid.audit.AuditInfo;
 import org.apache.druid.client.DruidServer;
 import org.apache.druid.common.config.JacksonConfigManager;
-import org.apache.druid.curator.discovery.ServiceAnnouncer;
 import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
@@ -49,6 +48,7 @@ import org.apache.druid.server.coordinator.CoordinatorDynamicConfig;
 import org.apache.druid.server.coordinator.DruidCompactionConfig;
 import org.apache.druid.server.coordinator.DruidCoordinator;
 import org.apache.druid.server.coordinator.MetadataManager;
+import org.apache.druid.server.coordinator.ServerCloneStatus;
 import org.apache.druid.server.coordinator.balancer.BalancerStrategyFactory;
 import org.apache.druid.server.coordinator.balancer.CachingCostBalancerStrategyConfig;
 import org.apache.druid.server.coordinator.balancer.CachingCostBalancerStrategyFactory;
@@ -62,8 +62,10 @@ import org.apache.druid.server.coordinator.config.DruidCoordinatorConfig;
 import org.apache.druid.server.coordinator.config.HttpLoadQueuePeonConfig;
 import org.apache.druid.server.coordinator.duty.CoordinatorCustomDutyGroups;
 import org.apache.druid.server.coordinator.loading.LoadQueueTaskMaster;
+import org.apache.druid.server.coordinator.loading.SegmentHolder;
 import org.apache.druid.server.coordinator.loading.SegmentLoadQueueManager;
 import org.apache.druid.server.coordinator.rules.Rule;
+import org.apache.druid.server.http.BrokerDynamicConfigSyncer;
 import org.apache.druid.server.http.CoordinatorDynamicConfigSyncer;
 import org.apache.druid.server.http.SegmentsToUpdateFilter;
 import org.apache.druid.server.lookup.cache.LookupCoordinatorManager;
@@ -72,6 +74,7 @@ import org.apache.druid.timeline.SegmentId;
 import org.easymock.EasyMock;
 import org.joda.time.Duration;
 
+import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -216,8 +219,6 @@ public class CoordinatorSimulationBuilder
         new SimOverlordClient(env.segmentManager),
         env.loadQueueTaskMaster,
         env.loadQueueManager,
-        new ServiceAnnouncer.Noop(),
-        null,
         new CoordinatorCustomDutyGroups(Collections.emptySet()),
         env.lookupCoordinatorManager,
         env.leaderSelector,
@@ -225,6 +226,7 @@ public class CoordinatorSimulationBuilder
         CentralizedDatasourceSchemaConfig.create(),
         new CompactionStatusTracker(),
         env.configSyncer,
+        env.brokerConfigSyncer,
         env.cloneStatusManager
     );
 
@@ -366,6 +368,14 @@ public class CoordinatorSimulationBuilder
     }
 
     @Override
+    public List<SegmentHolder> getQueuedSegments(DruidServer server)
+    {
+      return coordinator.getLoadManagementPeons()
+                        .get(server.getName())
+                        .getSegmentsInQueue();
+    }
+
+    @Override
     public void removeServer(DruidServer server)
     {
       env.inventory.removeServer(server);
@@ -406,6 +416,13 @@ public class CoordinatorSimulationBuilder
     public double getLoadPercentage(String datasource)
     {
       return coordinator.getDatasourceToLoadStatus().get(datasource);
+    }
+
+    @Nullable
+    @Override
+    public ServerCloneStatus getCloneStatus(DruidServer cloneTarget)
+    {
+      return env.cloneStatusManager.getStatusForServer(cloneTarget.getName());
     }
 
     @Override
@@ -451,6 +468,7 @@ public class CoordinatorSimulationBuilder
     private final LookupCoordinatorManager lookupCoordinatorManager;
     private final DruidCoordinatorConfig coordinatorConfig;
     private final CoordinatorDynamicConfigSyncer configSyncer;
+    private final BrokerDynamicConfigSyncer brokerConfigSyncer;
     private final CloneStatusManager cloneStatusManager;
 
     private final boolean loadImmediately;
@@ -518,10 +536,11 @@ public class CoordinatorSimulationBuilder
       );
 
       this.configSyncer = EasyMock.niceMock(CoordinatorDynamicConfigSyncer.class);
-      this.cloneStatusManager = EasyMock.niceMock(CloneStatusManager.class);
+      this.brokerConfigSyncer = EasyMock.niceMock(BrokerDynamicConfigSyncer.class);
+      this.cloneStatusManager = new CloneStatusManager();
 
       mocks.add(configSyncer);
-      mocks.add(cloneStatusManager);
+      mocks.add(brokerConfigSyncer);
     }
 
     private void setUp() throws Exception

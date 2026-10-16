@@ -33,6 +33,8 @@ import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.FileUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.java.util.common.io.Closer;
+import org.apache.druid.math.expr.ExprMacroTable;
+import org.apache.druid.query.OrderBy;
 import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryContexts;
 import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
@@ -41,12 +43,15 @@ import org.apache.druid.query.monomorphicprocessing.RuntimeShapeInspector;
 import org.apache.druid.segment.column.NumericColumn;
 import org.apache.druid.segment.data.ReadableOffset;
 import org.apache.druid.segment.incremental.IncrementalIndexSchema;
+import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
 import org.apache.druid.utils.CloseableUtils;
 import org.joda.time.DateTime;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -90,55 +95,72 @@ public class QueryableIndexCursorHolderTest
       }
     };
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         0,
         QueryableIndexCursorHolder.timeSearch(column, 0, 0, values.length)
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         2,
         QueryableIndexCursorHolder.timeSearch(column, 0, 2, values.length)
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         0,
         QueryableIndexCursorHolder.timeSearch(column, 0, 0, values.length / 2)
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         1,
         QueryableIndexCursorHolder.timeSearch(column, 1, 0, values.length)
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         2,
         QueryableIndexCursorHolder.timeSearch(column, 1, 2, values.length)
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         1,
         QueryableIndexCursorHolder.timeSearch(column, 1, 0, values.length / 2)
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         1,
         QueryableIndexCursorHolder.timeSearch(column, 1, 1, 8)
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         8,
         QueryableIndexCursorHolder.timeSearch(column, 2, 0, values.length)
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         10,
         QueryableIndexCursorHolder.timeSearch(column, 10, 0, values.length)
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         11,
         QueryableIndexCursorHolder.timeSearch(column, 15, 0, values.length)
     );
+  }
+
+  @Test
+  public void testOrderingEndsAtVirtualColumn(@TempDir final File tempDir) throws IOException
+  {
+    try (final QueryableIndex index = SmallSegmentTestHelper.makeIndex(tempDir)) {
+      final List<OrderBy> indexOrdering = index.getOrdering();
+      Assertions.assertEquals("dim2", indexOrdering.get(2).getColumnName());
+
+      // A virtual column takes the place of the stored "dim2", so the ordering ends before it.
+      final VirtualColumn dim2 = new ExpressionVirtualColumn("dim2", "'q'", null, ExprMacroTable.nil());
+      final CursorBuildSpec spec = CursorBuildSpec.builder().setVirtualColumns(VirtualColumns.create(dim2)).build();
+      try (final CursorHolder holder =
+               new QueryableIndexCursorHolder(index, spec, QueryableIndexTimeBoundaryInspector.create(index))) {
+        Assertions.assertEquals(indexOrdering.subList(0, 2), holder.getOrdering());
+      }
+    }
   }
 
   @Test
@@ -227,7 +249,7 @@ public class QueryableIndexCursorHolderTest
           rowCount++;
           cursor.advance();
         }
-        Assert.assertEquals(2, rowCount);
+        Assertions.assertEquals(2, rowCount);
       }
     }
     finally {

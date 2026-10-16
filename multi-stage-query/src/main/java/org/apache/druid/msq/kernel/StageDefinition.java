@@ -176,6 +176,49 @@ public class StageDefinition
   }
 
   /**
+   * Returns a new {@link StageDefinition} with runtime bounds applied. See {@link QueryDefinition#withRuntimeBounds}
+   * for details on the logic.
+   */
+  public StageDefinition withRuntimeBounds(
+      final int maxWorkerCount,
+      final int maxNonLeafWorkerCount,
+      final int targetPartitionsPerWorker
+  )
+  {
+    final int adjustedMaxWorkerCount;
+    final ShuffleSpec adjustedShuffleSpec;
+
+    if (InputSpecs.hasLeafInputs(inputSpecs, getBroadcastInputNumbers())) {
+      // Leaf stage.
+      adjustedMaxWorkerCount = Math.min(this.maxWorkerCount, maxWorkerCount);
+    } else {
+      // Nonleaf stage.
+      adjustedMaxWorkerCount = Math.min(this.maxWorkerCount, Math.min(maxWorkerCount, maxNonLeafWorkerCount));
+    }
+
+    if (shuffleSpec != null && shuffleSpec.isAdjustable()) {
+      adjustedShuffleSpec = shuffleSpec.withPartitionCount(adjustedMaxWorkerCount * targetPartitionsPerWorker);
+    } else {
+      adjustedShuffleSpec = shuffleSpec;
+    }
+
+    if (adjustedMaxWorkerCount == this.maxWorkerCount && Objects.equals(adjustedShuffleSpec, shuffleSpec)) {
+      return this;
+    }
+
+    return new StageDefinition(
+        id,
+        inputSpecs,
+        broadcastInputNumbers,
+        processor,
+        signature,
+        adjustedShuffleSpec,
+        adjustedMaxWorkerCount,
+        shuffleCheckHasMultipleValues
+    );
+  }
+
+  /**
    * Returns a unique stage identifier.
    */
   @JsonProperty
@@ -325,13 +368,13 @@ public class StageDefinition
 
   /**
    * Returns true, if the shuffling stage requires key statistics from the workers.
-   * <br></br>
+   * <br>
    * Returns false, if the stage does not shuffle.
-   * <br></br>
-   * <br></br>
+   * <br>
+   * <br>
    * It's possible we're shuffling using partition boundaries that are known ahead of time
    * For eg: we know there's exactly one partition in query shapes like `select with limit`.
-   * <br></br>
+   * <br>
    * In such cases, we return a false.
    */
   public boolean mustGatherResultKeyStatistics()

@@ -23,12 +23,20 @@ import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import org.apache.druid.segment.column.ColumnBuilder;
 import org.apache.druid.segment.column.ColumnConfig;
+import org.apache.druid.segment.column.ColumnDescriptor;
 import org.apache.druid.segment.column.ColumnHolder;
+import org.apache.druid.segment.column.ColumnType;
 
 import javax.annotation.Nullable;
 import java.nio.ByteBuffer;
 
 /**
+ * Writes and reads one part of a column, as listed in its {@link ColumnDescriptor}.
+ * <p>
+ * Column descriptors read from V10 segment metadata are interned, so one instance may be shared by many columns and
+ * segments. Implementations must therefore be immutable, and must implement {@link Object#equals} and
+ * {@link Object#hashCode} such that equal instances serialize to the same JSON and read columns identically. Equality
+ * should ignore {@link #getSerializer()}, which is only used for writing.
  */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
 @JsonSubTypes(value = {
@@ -52,6 +60,18 @@ public interface ColumnPartSerde
    * Returns a Deserializer to read a column from a segment.
    */
   Deserializer getDeserializer();
+
+  /**
+   * Returns the {@link ColumnType} for this part serde, if known. This is used to determine the column type from
+   * metadata without deserializing the column data. Returns {@code null} by default; implementations that carry
+   * type information beyond what {@link org.apache.druid.segment.column.ColumnDescriptor#getValueType()} provides
+   * (such as complex type names or array element types) should override this.
+   */
+  @Nullable
+  default ColumnType getColumnType()
+  {
+    return null;
+  }
 
   interface Deserializer
   {

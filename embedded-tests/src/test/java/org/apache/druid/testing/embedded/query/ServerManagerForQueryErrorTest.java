@@ -55,6 +55,7 @@ import org.apache.druid.query.policy.NoopPolicyEnforcer;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentMapFunction;
 import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.loading.AcquireMode;
 import org.apache.druid.server.SegmentManager;
 import org.apache.druid.server.ServerManager;
 import org.apache.druid.server.initialization.ServerConfig;
@@ -225,13 +226,12 @@ public class ServerManagerForQueryErrorTest extends ServerManager
             missingSegments.add(segment.getDescriptor());
             continue;
           }
-          Optional<Segment> ref = segmentManager.acquireCachedSegment(dataSegment);
+          Optional<Segment> ref = segmentManager.acquireCachedSegment(dataSegment, AcquireMode.FULL);
           if (ref.isPresent()) {
             segmentReferences.add(
                 new SegmentReference(
                     segment.getDescriptor(),
-                    segmentMapFunction.apply(ref),
-                    null
+                    segmentMapFunction.apply(ref)
                 )
             );
           } else if (segmentManager.canLoadSegmentOnDemand(dataSegment)) {
@@ -261,128 +261,128 @@ public class ServerManagerForQueryErrorTest extends ServerManager
             ref ->
                 ref.getSegmentReference()
                    .map(segment -> {
-                          final QueryContext queryContext = query.context();
-                          if (queryContext.getBoolean(QUERY_TIMEOUT_TEST_CONTEXT_KEY, false)) {
-                            return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
-                            {
-                              @Override
-                              public <OutType> OutType accumulate(
-                                  OutType initValue,
-                                  Accumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw new QueryTimeoutException("query timeout test");
-                              }
+                     final QueryContext queryContext = query.context();
+                     if (queryContext.getBoolean(QUERY_TIMEOUT_TEST_CONTEXT_KEY, false)) {
+                       return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
+                       {
+                         @Override
+                         public <OutType> OutType accumulate(
+                             OutType initValue,
+                             Accumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw new QueryTimeoutException("query timeout test");
+                         }
 
-                              @Override
-                              public <OutType> Yielder<OutType> toYielder(
-                                  OutType initValue,
-                                  YieldingAccumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw new QueryTimeoutException("query timeout test");
-                              }
-                            };
-                          } else if (queryContext.getBoolean(QUERY_CAPACITY_EXCEEDED_TEST_CONTEXT_KEY, false)) {
-                            return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
-                            {
-                              @Override
-                              public <OutType> OutType accumulate(
-                                  OutType initValue,
-                                  Accumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw QueryCapacityExceededException.withErrorMessageAndResolvedHost(
-                                    "query capacity exceeded test"
-                                );
-                              }
+                         @Override
+                         public <OutType> Yielder<OutType> toYielder(
+                             OutType initValue,
+                             YieldingAccumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw new QueryTimeoutException("query timeout test");
+                         }
+                       };
+                     } else if (queryContext.getBoolean(QUERY_CAPACITY_EXCEEDED_TEST_CONTEXT_KEY, false)) {
+                       return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
+                       {
+                         @Override
+                         public <OutType> OutType accumulate(
+                             OutType initValue,
+                             Accumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw QueryCapacityExceededException.withErrorMessageAndResolvedHost(
+                               "query capacity exceeded test"
+                           );
+                         }
 
-                              @Override
-                              public <OutType> Yielder<OutType> toYielder(
-                                  OutType initValue,
-                                  YieldingAccumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw QueryCapacityExceededException.withErrorMessageAndResolvedHost(
-                                    "query capacity exceeded test"
-                                );
-                              }
-                            };
-                          } else if (queryContext.getBoolean(QUERY_UNSUPPORTED_TEST_CONTEXT_KEY, false)) {
-                            return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
-                            {
-                              @Override
-                              public <OutType> OutType accumulate(
-                                  OutType initValue,
-                                  Accumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw new QueryUnsupportedException("query unsupported test");
-                              }
+                         @Override
+                         public <OutType> Yielder<OutType> toYielder(
+                             OutType initValue,
+                             YieldingAccumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw QueryCapacityExceededException.withErrorMessageAndResolvedHost(
+                               "query capacity exceeded test"
+                           );
+                         }
+                       };
+                     } else if (queryContext.getBoolean(QUERY_UNSUPPORTED_TEST_CONTEXT_KEY, false)) {
+                       return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
+                       {
+                         @Override
+                         public <OutType> OutType accumulate(
+                             OutType initValue,
+                             Accumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw new QueryUnsupportedException("query unsupported test");
+                         }
 
-                              @Override
-                              public <OutType> Yielder<OutType> toYielder(
-                                  OutType initValue,
-                                  YieldingAccumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw new QueryUnsupportedException("query unsupported test");
-                              }
-                            };
-                          } else if (queryContext.getBoolean(RESOURCE_LIMIT_EXCEEDED_TEST_CONTEXT_KEY, false)) {
-                            return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
-                            {
-                              @Override
-                              public <OutType> OutType accumulate(
-                                  OutType initValue,
-                                  Accumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw new ResourceLimitExceededException("resource limit exceeded test");
-                              }
+                         @Override
+                         public <OutType> Yielder<OutType> toYielder(
+                             OutType initValue,
+                             YieldingAccumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw new QueryUnsupportedException("query unsupported test");
+                         }
+                       };
+                     } else if (queryContext.getBoolean(RESOURCE_LIMIT_EXCEEDED_TEST_CONTEXT_KEY, false)) {
+                       return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
+                       {
+                         @Override
+                         public <OutType> OutType accumulate(
+                             OutType initValue,
+                             Accumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw new ResourceLimitExceededException("resource limit exceeded test");
+                         }
 
-                              @Override
-                              public <OutType> Yielder<OutType> toYielder(
-                                  OutType initValue,
-                                  YieldingAccumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw new ResourceLimitExceededException("resource limit exceeded test");
-                              }
-                            };
-                          } else if (queryContext.getBoolean(QUERY_FAILURE_TEST_CONTEXT_KEY, false)) {
-                            return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
-                            {
-                              @Override
-                              public <OutType> OutType accumulate(
-                                  OutType initValue,
-                                  Accumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw new RuntimeException("query failure test");
-                              }
+                         @Override
+                         public <OutType> Yielder<OutType> toYielder(
+                             OutType initValue,
+                             YieldingAccumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw new ResourceLimitExceededException("resource limit exceeded test");
+                         }
+                       };
+                     } else if (queryContext.getBoolean(QUERY_FAILURE_TEST_CONTEXT_KEY, false)) {
+                       return (QueryRunner<T>) (queryPlus, responseContext) -> new Sequence<>()
+                       {
+                         @Override
+                         public <OutType> OutType accumulate(
+                             OutType initValue,
+                             Accumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw new RuntimeException("query failure test");
+                         }
 
-                              @Override
-                              public <OutType> Yielder<OutType> toYielder(
-                                  OutType initValue,
-                                  YieldingAccumulator<OutType, T> accumulator
-                              )
-                              {
-                                throw new RuntimeException("query failure test");
-                              }
-                            };
-                          }
+                         @Override
+                         public <OutType> Yielder<OutType> toYielder(
+                             OutType initValue,
+                             YieldingAccumulator<OutType, T> accumulator
+                         )
+                         {
+                           throw new RuntimeException("query failure test");
+                         }
+                       };
+                     }
 
-                          return buildQueryRunnerForSegment(
-                              ref.getSegmentDescriptor(),
-                              segment,
-                              factory,
-                              toolChest,
-                              cpuTimeAccumulator,
-                              cacheKeyPrefix
-                          );
-                        }
-                   ).orElseThrow(
+                     return buildQueryRunnerForSegment(
+                         ref.getSegmentDescriptor(),
+                         segment,
+                         factory,
+                         toolChest,
+                         cpuTimeAccumulator,
+                         cacheKeyPrefix
+                     );
+                   })
+                   .orElseThrow(
                        () -> DruidException.defensive("Unexpected missing segment[%s]", ref.getSegmentDescriptor())
                    )
         );

@@ -140,6 +140,8 @@ public class SuperSorter
   private final int maxActiveProcessors;
   private final String cancellationId;
   private final boolean removeNullBytes;
+  @Nullable
+  private final FrameCombinerFactory combinerFactory;
   private final Object runWorkersLock = new Object();
 
   @GuardedBy("runWorkersLock")
@@ -180,6 +182,9 @@ public class SuperSorter
 
   @GuardedBy("runWorkersLock")
   private SettableFuture<OutputChannels> allDone = null;
+
+  @GuardedBy("runWorkersLock")
+  private boolean totalMergersForUltimateLevelSet = false;
 
   @GuardedBy("runWorkersLock")
   SuperSorterProgressTracker superSorterProgressTracker;
@@ -238,7 +243,8 @@ public class SuperSorter
       final long rowLimit,
       @Nullable final String cancellationId,
       final SuperSorterProgressTracker superSorterProgressTracker,
-      final boolean removeNullBytes
+      final boolean removeNullBytes,
+      @Nullable final FrameCombinerFactory combinerFactory
   )
   {
     this.inputChannels = inputChannels;
@@ -256,6 +262,7 @@ public class SuperSorter
     this.cancellationId = cancellationId;
     this.superSorterProgressTracker = superSorterProgressTracker;
     this.removeNullBytes = removeNullBytes;
+    this.combinerFactory = combinerFactory;
 
     for (int i = 0; i < inputChannels.size(); i++) {
       inputChannelsToRead.add(i);
@@ -295,7 +302,7 @@ public class SuperSorter
           () -> {
             synchronized (runWorkersLock) {
               if (outputPartitionsFuture.isDone()) { // Update the progress tracker
-                superSorterProgressTracker.setTotalMergersForUltimateLevel(getOutputPartitions().size());
+                setTotalMergersForUltimateLevel();
               }
               runWorkersIfPossible();
               setAllDoneIfPossible();
@@ -411,7 +418,7 @@ public class SuperSorter
         }
 
         // OK to use wrap, not wrapReadOnly, because nil channels are already read-only.
-        allDone.set(OutputChannels.wrap(channels));
+        setAllDone(OutputChannels.wrap(channels));
       } else if (rowLimit == 0 && activeProcessors == 0) {
         // We had a row limit, and got it all the way down to zero.
         // Generate empty output channels for any partitions that we haven't written yet.
@@ -423,18 +430,34 @@ public class SuperSorter
         }
 
         // OK to use wrap, not wrapReadOnly, because all channels in this list are already read-only.
-        allDone.set(OutputChannels.wrap(outputChannels));
+        setAllDone(OutputChannels.wrap(outputChannels));
       } else if (totalMergingLevels != UNKNOWN_LEVEL
                  && outputsReadyByLevel.containsKey(totalMergingLevels - 1)
                  && (outputsReadyByLevel.get(totalMergingLevels - 1).size() ==
                      getTotalMergersInLevel(totalMergingLevels - 1))) {
         // We're done!!
         // OK to use wrap, not wrapReadOnly, because all channels in this list are already read-only.
-        allDone.set(OutputChannels.wrap(outputChannels));
+        setAllDone(OutputChannels.wrap(outputChannels));
       }
     }
     catch (Throwable e) {
       allDone.setException(e);
+    }
+  }
+
+  @GuardedBy("runWorkersLock")
+  private void setAllDone(final OutputChannels channels)
+  {
+    setTotalMergersForUltimateLevel();
+    allDone.set(channels);
+  }
+
+  @GuardedBy("runWorkersLock")
+  private void setTotalMergersForUltimateLevel()
+  {
+    if (!totalMergersForUltimateLevelSet) {
+      superSorterProgressTracker.setTotalMergersForUltimateLevel(getOutputPartitions().size());
+      totalMergersForUltimateLevelSet = true;
     }
   }
 
@@ -752,6 +775,7 @@ public class SuperSorter
                   removeNullBytes
               ),
               sortKey,
+              combinerFactory != null ? combinerFactory.newCombiner() : null,
               outPartitions,
               rowLimit
           );

@@ -25,11 +25,11 @@ import com.google.common.base.Supplier;
 import com.google.inject.Inject;
 import org.apache.druid.client.DataSourcesSnapshot;
 import org.apache.druid.client.broker.BrokerClient;
-import org.apache.druid.client.indexing.ClientCompactionRunnerInfo;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.indexer.TaskLocation;
 import org.apache.druid.indexer.TaskStatus;
 import org.apache.druid.indexing.common.actions.TaskActionClientFactory;
+import org.apache.druid.indexing.common.task.Task;
 import org.apache.druid.indexing.overlord.GlobalTaskLockbox;
 import org.apache.druid.indexing.overlord.TaskMaster;
 import org.apache.druid.indexing.overlord.TaskQueryTool;
@@ -183,7 +183,7 @@ public class OverlordCompactionScheduler implements CompactionScheduler
     this.overlordClient = new LocalOverlordClient(taskMaster, taskQueryTool, objectMapper);
     this.brokerClient = brokerClient;
     this.activeSupervisors = new ConcurrentHashMap<>();
-    this.datasourceToCompactionSnapshot = new AtomicReference<>();
+    this.datasourceToCompactionSnapshot = new AtomicReference<>(Collections.emptyMap());
     this.latestJobQueue = new AtomicReference<>();
 
     this.taskActionClientFactory = taskActionClientFactory;
@@ -199,16 +199,16 @@ public class OverlordCompactionScheduler implements CompactionScheduler
       }
 
       @Override
-      public void locationChanged(String taskId, TaskLocation newLocation)
+      public void locationChanged(Task task, TaskLocation newLocation)
       {
         // Do nothing
       }
 
       @Override
-      public void statusChanged(String taskId, TaskStatus status)
+      public void statusChanged(Task task, TaskStatus status)
       {
         if (status.isComplete()) {
-          onTaskFinished(taskId, status);
+          onTaskFinished(task, status);
           launchPendingJobs();
         }
       }
@@ -265,10 +265,7 @@ public class OverlordCompactionScheduler implements CompactionScheduler
     if (compactionConfig == null) {
       return CompactionConfigValidationResult.failure("Cannot be null");
     } else {
-      return ClientCompactionRunnerInfo.validateCompactionConfig(
-          compactionConfig,
-          getLatestClusterConfig().getEngine()
-      );
+      return compactionConfig.validate(getLatestClusterConfig());
     }
   }
 
@@ -447,12 +444,12 @@ public class OverlordCompactionScheduler implements CompactionScheduler
     }
   }
 
-  private void onTaskFinished(String taskId, TaskStatus taskStatus)
+  private void onTaskFinished(Task task, TaskStatus taskStatus)
   {
-    statusTracker.onTaskFinished(taskId, taskStatus);
+    statusTracker.onTaskFinished(task.getId(), taskStatus);
 
     updateQueueIfComputed(queue -> {
-      queue.onTaskFinished(taskId, taskStatus);
+      queue.onTaskFinished(task.getId(), taskStatus);
       updateCompactionSnapshots(queue);
     });
   }

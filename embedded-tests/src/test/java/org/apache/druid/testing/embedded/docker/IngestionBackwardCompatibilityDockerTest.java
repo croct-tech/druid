@@ -20,6 +20,7 @@
 package org.apache.druid.testing.embedded.docker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.netty.handler.codec.http.HttpMethod;
 import org.apache.druid.client.coordinator.Coordinator;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.http.client.response.BytesFullResponseHandler;
@@ -33,9 +34,11 @@ import org.apache.druid.testing.embedded.EmbeddedDruidCluster;
 import org.apache.druid.testing.embedded.EmbeddedHistorical;
 import org.apache.druid.testing.embedded.EmbeddedRouter;
 import org.apache.druid.testing.embedded.indexing.IngestionSmokeTest;
-import org.jboss.netty.handler.codec.http.HttpMethod;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+
+import java.util.Map;
 
 /**
  * Runs some basic ingestion tests using Coordinator and Overlord at version
@@ -62,6 +65,7 @@ public class IngestionBackwardCompatibilityDockerTest extends IngestionSmokeTest
     return cluster
         .useContainerFriendlyHostname()
         .useDefaultTimeoutForLatchableEmitter(60)
+        .addServer(eventCollector)
         .addResource(containerOverlord)
         .addResource(containerCoordinator)
         .addServer(overlord)
@@ -69,7 +73,6 @@ public class IngestionBackwardCompatibilityDockerTest extends IngestionSmokeTest
         .addServer(broker)
         .addServer(new EmbeddedHistorical())
         .addServer(new EmbeddedRouter())
-        .addServer(eventCollector)
         .addCommonProperty(
             "druid.extensions.loadList",
             "[\"druid-s3-extensions\", \"druid-kafka-indexing-service\","
@@ -109,5 +112,29 @@ public class IngestionBackwardCompatibilityDockerTest extends IngestionSmokeTest
     catch (Exception e) {
       throw new RuntimeException(e);
     }
+  }
+
+  @Override
+  protected void validateSupervisorUpdateResponse(Map<String, String> startSupervisorResult, String supervisorId)
+  {
+    // Older Overlord versions did not include "restarted" in the API response.
+    Assertions.assertEquals(Map.of("id", supervisorId), startSupervisorResult);
+  }
+
+  @Override
+  @Disabled("modified/restarted response semantics and skipRestartIfUnmodified are not supported by the old Overlord")
+  public void test_kafkaSupervisor_modifiedAndRestartedCombinations()
+  {
+    // No-op: the older Overlord returns only {id} and always restarts on submission.
+  }
+
+  @Override
+  protected void waitForNextCoordinatorCacheSync()
+  {
+    // Wait for full Coordinator cache sync (Druid 31 does not support incremental cache)
+    eventCollector.latchableEmitter().waitForNextEvent(
+        event -> event.hasMetricName("segment/poll/time")
+                      .hasService("druid/coordinator")
+    );
   }
 }

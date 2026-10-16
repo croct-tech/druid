@@ -27,7 +27,6 @@ import com.google.common.base.Function;
 import com.google.common.base.Functions;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
 import com.google.common.primitives.Longs;
@@ -44,12 +43,14 @@ import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.query.BaseQuery;
 import org.apache.druid.query.DataSource;
 import org.apache.druid.query.DimensionComparisonUtils;
+import org.apache.druid.query.PerSegmentQueryOptimizationContext;
 import org.apache.druid.query.Queries;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryDataSource;
 import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.PostAggregator;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
 import org.apache.druid.query.dimension.DimensionSpec;
 import org.apache.druid.query.filter.DimFilter;
@@ -874,6 +875,19 @@ public class GroupByQuery extends BaseQuery<ResultRow>
     return new Builder(this).setPostAggregatorSpecs(postAggregatorSpecs).build();
   }
 
+  @Override
+  public Query<ResultRow> optimizeForSegment(PerSegmentQueryOptimizationContext optimizationContext)
+  {
+    if (!context().isOptimizeAggregators()) {
+      return this;
+    }
+    final List<AggregatorFactory> optimizedAggs = new ArrayList<>(aggregatorSpecs.size());
+    for (AggregatorFactory aggregatorFactory : aggregatorSpecs) {
+      optimizedAggs.add(aggregatorFactory.optimizeForSegment(optimizationContext));
+    }
+    return withAggregatorSpecs(optimizedAggs);
+  }
+
   private static void verifyOutputNames(
       List<DimensionSpec> dimensions,
       List<AggregatorFactory> aggregators,
@@ -1052,7 +1066,7 @@ public class GroupByQuery extends BaseQuery<ResultRow>
 
     public Builder setVirtualColumns(VirtualColumn... virtualColumns)
     {
-      this.virtualColumns = VirtualColumns.create(Arrays.asList(virtualColumns));
+      this.virtualColumns = VirtualColumns.create(virtualColumns);
       return this;
     }
 
@@ -1084,6 +1098,14 @@ public class GroupByQuery extends BaseQuery<ResultRow>
     {
       ensureExplicitLimitSpecNotSet();
       this.orderByColumnSpecs.add(columnSpec);
+      this.postProcessingFn = null;
+      return this;
+    }
+
+    public Builder setOrderByColumns(List<OrderByColumnSpec> columnSpec)
+    {
+      ensureExplicitLimitSpecNotSet();
+      this.orderByColumnSpecs = new ArrayList<>(columnSpec);
       this.postProcessingFn = null;
       return this;
     }
@@ -1211,7 +1233,7 @@ public class GroupByQuery extends BaseQuery<ResultRow>
 
     public Builder queryId(String queryId)
     {
-      context = BaseQuery.computeOverriddenContext(context, ImmutableMap.of(BaseQuery.QUERY_ID, queryId));
+      context = BaseQuery.computeOverriddenContext(context, QueryContextParameters.QUERY_ID, queryId);
       return this;
     }
 

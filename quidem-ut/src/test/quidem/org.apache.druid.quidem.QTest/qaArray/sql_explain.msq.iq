@@ -39,8 +39,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -57,7 +56,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "a_bool" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -128,8 +126,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -146,7 +143,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "a_int" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -217,8 +213,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -246,7 +241,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -317,8 +311,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -349,7 +342,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -420,8 +412,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -438,7 +429,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "a_float" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -509,8 +499,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -538,7 +527,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -609,8 +597,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -641,7 +628,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -712,8 +698,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -730,7 +715,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "a_str" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -801,8 +785,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -830,7 +813,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -901,8 +883,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -933,7 +914,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1004,8 +984,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1022,7 +1001,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "a_null" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1093,8 +1071,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1122,7 +1099,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1193,8 +1169,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1225,7 +1200,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1296,8 +1270,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1314,7 +1287,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "a_empty" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1385,8 +1357,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1414,7 +1385,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1485,8 +1455,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1517,7 +1486,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1588,8 +1556,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1606,7 +1573,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "a_mixed" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1677,8 +1643,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1706,7 +1671,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1777,8 +1741,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1809,7 +1772,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1880,8 +1842,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1898,7 +1859,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "a_nested" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -1969,8 +1929,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -1998,7 +1957,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,
@@ -2069,8 +2027,7 @@ FROM test_array;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_array",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_array"
     } ],
     "processor" : {
       "type" : "scan",
@@ -2101,7 +2058,6 @@ FROM test_array;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,

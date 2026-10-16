@@ -29,7 +29,6 @@ import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.query.Druids;
 import org.apache.druid.query.JoinAlgorithm;
 import org.apache.druid.query.JoinDataSource;
-import org.apache.druid.query.QueryContexts;
 import org.apache.druid.query.QueryDataSource;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
@@ -50,6 +49,7 @@ import org.apache.druid.query.aggregation.datasketches.quantiles.sql.DoublesSket
 import org.apache.druid.query.aggregation.hyperloglog.HyperUniqueFinalizingPostAggregator;
 import org.apache.druid.query.aggregation.post.ArithmeticPostAggregator;
 import org.apache.druid.query.aggregation.post.FieldAccessPostAggregator;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
 import org.apache.druid.query.expression.TestExprMacroTable;
 import org.apache.druid.query.groupby.GroupByQuery;
@@ -72,7 +72,7 @@ import org.apache.druid.sql.calcite.util.SqlTestFramework.StandardComponentSuppl
 import org.apache.druid.sql.calcite.util.TestDataBuilder;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.partition.LinearShardSpec;
-import org.junit.Assert;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
@@ -308,9 +308,9 @@ public class DoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
         + ") AS alias\n",
         ImmutableMap.<String, Object>builder()
                     .putAll(QUERY_CONTEXT_DEFAULT)
-                    .put(QueryContexts.MAX_SUBQUERY_BYTES_KEY, "100000")
+                    .put(QueryContextParameters.MAX_SUBQUERY_BYTES.getName(), "100000")
                     // Disallows the fallback to row based limiting
-                    .put(QueryContexts.MAX_SUBQUERY_ROWS_KEY, "10")
+                    .put(QueryContextParameters.MAX_SUBQUERY_ROWS.getName(), "10")
                     .build(),
         ImmutableList.of(
             newScanQueryBuilder()
@@ -396,7 +396,7 @@ public class DoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
                 .intervals(querySegmentSpec(Intervals.ETERNITY))
                 .virtualColumns(
                     new ExpressionVirtualColumn("v0", "946684800000", ColumnType.LONG, TestExprMacroTable.INSTANCE),
-                    new ExpressionVirtualColumn("v1", "case_searched((\"j0.a0\" < \"_a0\"),'val2',((\"j0.a0\" >= \"_a0\") && (\"j0.a0\" < \"_a1\")),'val3',(\"j0.a0\" >= \"_a1\"),'val1',null)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
+                    new ExpressionVirtualColumn("v1", "case_searched((CAST(\"j0.a0\", 'DOUBLE') < \"_a0\"),'val2',((CAST(\"j0.a0\", 'DOUBLE') >= \"_a0\") && (CAST(\"j0.a0\", 'DOUBLE') < \"_a1\")),'val3',(CAST(\"j0.a0\", 'DOUBLE') >= \"_a1\"),'val1',null)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
                 )
                 .columns("v0", "j0.d0", "j0.a0", "v1")
                 .columnTypes(ColumnType.LONG, ColumnType.STRING, ColumnType.LONG, ColumnType.STRING)
@@ -1121,12 +1121,12 @@ public class DoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
 
     try {
       testQuery(query, ImmutableList.of(), ImmutableList.of());
-      Assert.fail("Expected DruidException but query succeeded");
+      Assertions.fail("Expected DruidException but query succeeded");
     }
     catch (DruidException e) {
-      Assert.assertEquals(DruidException.Persona.USER, e.getTargetPersona());
-      Assert.assertEquals(DruidException.Category.INVALID_INPUT, e.getCategory());
-      Assert.assertTrue(e.getMessage().contains("Cannot apply 'APPROX_QUANTILE_DS'"));
+      Assertions.assertEquals(DruidException.Persona.USER, e.getTargetPersona());
+      Assertions.assertEquals(DruidException.Category.INVALID_INPUT, e.getCategory());
+      Assertions.assertTrue(e.getMessage().contains("Cannot apply 'APPROX_QUANTILE_DS'"));
     }
   }
 
@@ -1138,12 +1138,12 @@ public class DoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
 
     try {
       testQuery(query, ImmutableList.of(), ImmutableList.of());
-      Assert.fail("Expected DruidException but query succeeded");
+      Assertions.fail("Expected DruidException but query succeeded");
     }
     catch (DruidException e) {
-      Assert.assertEquals(DruidException.Persona.USER, e.getTargetPersona());
-      Assert.assertEquals(DruidException.Category.INVALID_INPUT, e.getCategory());
-      Assert.assertTrue(e.getMessage().contains("Cannot apply 'APPROX_QUANTILE_DS'"));
+      Assertions.assertEquals(DruidException.Persona.USER, e.getTargetPersona());
+      Assertions.assertEquals(DruidException.Category.INVALID_INPUT, e.getCategory());
+      Assertions.assertTrue(e.getMessage().contains("Cannot apply 'APPROX_QUANTILE_DS'"));
     }
   }
 

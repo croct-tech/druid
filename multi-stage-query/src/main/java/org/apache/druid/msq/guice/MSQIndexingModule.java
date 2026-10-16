@@ -27,6 +27,7 @@ import com.google.inject.Binder;
 import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.Provides;
+import org.apache.druid.client.indexing.IndexingService;
 import org.apache.druid.guice.LazySingleton;
 import org.apache.druid.guice.annotations.EscalatedGlobal;
 import org.apache.druid.initialization.DruidModule;
@@ -36,9 +37,13 @@ import org.apache.druid.msq.counters.CpuCounter;
 import org.apache.druid.msq.counters.CpuCounters;
 import org.apache.druid.msq.counters.NilQueryCounterSnapshot;
 import org.apache.druid.msq.counters.SegmentGenerationProgressCounter;
+import org.apache.druid.msq.counters.StorageCounters;
 import org.apache.druid.msq.counters.SuperSorterProgressTrackerCounter;
 import org.apache.druid.msq.counters.WarningCounters;
+import org.apache.druid.msq.dart.worker.DartWorkerService;
 import org.apache.druid.msq.indexing.IndexerControllerContextFactory;
+import org.apache.druid.msq.indexing.IndexerSegmentsInputSliceReaderProvider;
+import org.apache.druid.msq.indexing.IndexerTableInputSpecSlicerProvider;
 import org.apache.druid.msq.indexing.MSQCompactionRunner;
 import org.apache.druid.msq.indexing.MSQControllerTask;
 import org.apache.druid.msq.indexing.MSQWorkerTask;
@@ -47,6 +52,7 @@ import org.apache.druid.msq.indexing.error.CanceledFault;
 import org.apache.druid.msq.indexing.error.CannotParseExternalDataFault;
 import org.apache.druid.msq.indexing.error.ColumnNameRestrictedFault;
 import org.apache.druid.msq.indexing.error.ColumnTypeNotSupportedFault;
+import org.apache.druid.msq.indexing.error.DruidExceptionFault;
 import org.apache.druid.msq.indexing.error.DurableStorageConfigurationFault;
 import org.apache.druid.msq.indexing.error.InsertCannotAllocateSegmentFault;
 import org.apache.druid.msq.indexing.error.InsertCannotBeEmptyFault;
@@ -130,6 +136,7 @@ public class MSQIndexingModule implements DruidModule
       CannotParseExternalDataFault.class,
       ColumnTypeNotSupportedFault.class,
       ColumnNameRestrictedFault.class,
+      DruidExceptionFault.class,
       DurableStorageConfigurationFault.class,
       InsertCannotAllocateSegmentFault.class,
       InsertCannotBeEmptyFault.class,
@@ -196,6 +203,7 @@ public class MSQIndexingModule implements DruidModule
         SuperSorterProgressTrackerCounter.Snapshot.class,
         WarningCounters.Snapshot.class,
         SegmentGenerationProgressCounter.Snapshot.class,
+        StorageCounters.Snapshot.class,
         CpuCounters.Snapshot.class,
         CpuCounter.Snapshot.class,
         NilQueryCounterSnapshot.class,
@@ -222,6 +230,10 @@ public class MSQIndexingModule implements DruidModule
 
     module.registerSubtypes(new NamedType(MSQCompactionRunner.class, MSQCompactionRunner.TYPE));
 
+    // Registered here rather than in DartWorkerModule so that every process that discovers Historicals can parse
+    // their DartWorkerService announcement.
+    module.registerSubtypes(new NamedType(DartWorkerService.class, DartWorkerService.NAME));
+
     FAULT_CLASSES.forEach(module::registerSubtypes);
     module.addSerializer(new CounterSnapshotsSerializer());
     return Collections.singletonList(module);
@@ -246,6 +258,19 @@ public class MSQIndexingModule implements DruidModule
               .addBinding(WindowOperatorQuery.class)
               .to(WindowOperatorQueryKit.class);
     binder.bind(WindowOperatorQueryKit.class).in(LazySingleton.class);
+
+    // Create the binder no matter what, to ensure we can at least get an empty map.
+    MSQBinders.dataSourcePlannerBinder(binder);
+
+    MSQBinders.inputSpecSlicerProviderBinder(binder, IndexingService.class)
+              .addBinding()
+              .to(IndexerTableInputSpecSlicerProvider.class)
+              .in(LazySingleton.class);
+
+    MSQBinders.inputSliceReaderProviderBinder(binder, IndexingService.class)
+              .addBinding()
+              .to(IndexerSegmentsInputSliceReaderProvider.class)
+              .in(LazySingleton.class);
   }
 
   @Provides

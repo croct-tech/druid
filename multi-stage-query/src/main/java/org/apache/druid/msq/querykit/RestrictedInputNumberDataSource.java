@@ -25,10 +25,15 @@ import com.fasterxml.jackson.annotation.JsonTypeName;
 import com.google.common.base.Preconditions;
 import org.apache.druid.query.LeafDataSource;
 import org.apache.druid.query.Query;
+import org.apache.druid.query.filter.DimFilter;
+import org.apache.druid.query.filter.SegmentPruner;
+import org.apache.druid.query.policy.NoRestrictionPolicy;
 import org.apache.druid.query.policy.Policy;
 import org.apache.druid.segment.RestrictedSegment;
 import org.apache.druid.segment.SegmentMapFunction;
+import org.apache.druid.segment.VirtualColumns;
 
+import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.Objects;
 import java.util.Set;
@@ -96,9 +101,31 @@ public class RestrictedInputNumberDataSource extends LeafDataSource
   }
 
   @Override
+  public Set<String> getReservedColumns()
+  {
+    return policy.getReservedColumns();
+  }
+
+  @Override
+  public boolean mayFilterRows()
+  {
+    return !(policy instanceof NoRestrictionPolicy);
+  }
+
+  @Override
   public SegmentMapFunction createSegmentMapFunction(Query query)
   {
     return SegmentMapFunction.IDENTITY.thenMap(segment -> new RestrictedSegment(segment, policy));
+  }
+
+  @Nullable
+  @Override
+  public SegmentPruner createSegmentPruner(@Nullable DimFilter filter, VirtualColumns virtualColumns)
+  {
+    return SegmentPruner.combine(
+        policy.createSegmentPruner(),
+        super.createSegmentPruner(filter, virtualColumns)
+    );
   }
 
   @Override

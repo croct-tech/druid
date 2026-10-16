@@ -21,7 +21,6 @@ package org.apache.druid.query.spec;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.Intervals;
@@ -33,24 +32,28 @@ import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.java.util.common.guava.Yielder;
 import org.apache.druid.java.util.common.guava.YieldingAccumulator;
 import org.apache.druid.query.Druids;
+import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryPlus;
 import org.apache.druid.query.QueryRunner;
 import org.apache.druid.query.Result;
 import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.aggregation.CountAggregator;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.timeseries.TimeseriesQuery;
 import org.apache.druid.query.timeseries.TimeseriesResultBuilder;
 import org.apache.druid.query.timeseries.TimeseriesResultValue;
 import org.apache.druid.segment.SegmentMissingException;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class SpecificSegmentQueryRunnerTest
 {
@@ -182,29 +185,122 @@ public class SpecificSegmentQueryRunnerTest
                                           new CountAggregatorFactory("rows")
                                       )
                                   )
-                                  // Do one test with CTX_SET_THREAD_NAME = false.
-                                  .context(ImmutableMap.of(SpecificSegmentQueryRunner.CTX_SET_THREAD_NAME, false))
                                   .build();
     Sequence results = queryRunner.run(QueryPlus.wrap(query), responseContext);
     List<Result<TimeseriesResultValue>> res = results.toList();
 
-    Assert.assertEquals(1, res.size());
+    Assertions.assertEquals(1, res.size());
 
     Result<TimeseriesResultValue> theVal = res.get(0);
 
-    Assert.assertTrue(1L == theVal.getValue().getLongMetric("rows"));
+    Assertions.assertTrue(1L == theVal.getValue().getLongMetric("rows"));
 
     validate(mapper, descriptor, responseContext);
+  }
+
+  @Test
+  public void testSetThreadName()
+  {
+    assertThreadNameDuringProcessing(null, "original-test-thread");
+    assertThreadNameDuringProcessing(false, "original-test-thread");
+    assertThreadNameDuringProcessing(true, "processing_thread-name-query");
+  }
+
+  private void assertThreadNameDuringProcessing(
+      final Boolean setProcessingThreadNames,
+      final String expectedThreadNameDuringProcessing
+  )
+  {
+    final String originalThreadName = Thread.currentThread().getName();
+
+    try {
+      Thread.currentThread().setName("original-test-thread");
+
+      final AtomicReference<String> runnerThreadName = new AtomicReference<>();
+      final AtomicReference<String> sequenceThreadName = new AtomicReference<>();
+      final Result<TimeseriesResultValue> value = makeResult();
+      final SegmentDescriptor descriptor = new SegmentDescriptor(
+          Intervals.of("2012-01-01T00:00:00Z/P1D"),
+          "version",
+          0
+      );
+
+      final SpecificSegmentQueryRunner<Result<TimeseriesResultValue>> queryRunner = new SpecificSegmentQueryRunner<>(
+          new QueryRunner<>()
+          {
+            @Override
+            public Sequence<Result<TimeseriesResultValue>> run(
+                QueryPlus<Result<TimeseriesResultValue>> queryPlus,
+                ResponseContext responseContext
+            )
+            {
+              runnerThreadName.set(Thread.currentThread().getName());
+              return Sequences.withEffect(
+                  Sequences.simple(Collections.singletonList(value)),
+                  () -> sequenceThreadName.set(Thread.currentThread().getName()),
+                  Execs.directExecutor()
+              );
+            }
+          },
+          new SpecificSegmentSpec(descriptor)
+      );
+
+      final TimeseriesQuery query = Druids.newTimeseriesQueryBuilder()
+                                          .dataSource("foo")
+                                          .granularity(Granularities.ALL)
+                                          .intervals(ImmutableList.of(Intervals.of("2012-01-01T00:00:00Z/P1D")))
+                                          .aggregators(
+                                              ImmutableList.of(
+                                                  new CountAggregatorFactory("rows")
+                                              )
+                                          )
+                                          .context(makeThreadNameContext(setProcessingThreadNames))
+                                          .queryId("thread-name-query")
+                                          .build();
+
+      final Sequence<Result<TimeseriesResultValue>> results = queryRunner.run(
+          QueryPlus.wrap(query),
+          ResponseContext.createEmpty()
+      );
+      results.toList();
+
+      Assertions.assertEquals(expectedThreadNameDuringProcessing, runnerThreadName.get());
+      Assertions.assertEquals(expectedThreadNameDuringProcessing, sequenceThreadName.get());
+      Assertions.assertEquals("original-test-thread", Thread.currentThread().getName());
+    }
+    finally {
+      Thread.currentThread().setName(originalThreadName);
+    }
+  }
+
+  private static Map<String, Object> makeThreadNameContext(final Boolean setProcessingThreadNames)
+  {
+    if (setProcessingThreadNames == null) {
+      return Collections.emptyMap();
+    } else {
+      return QueryContext.ofMap(QueryContextParameters.SET_PROCESSING_THREAD_NAMES, setProcessingThreadNames);
+    }
+  }
+
+  private static Result<TimeseriesResultValue> makeResult()
+  {
+    final TimeseriesResultBuilder builder = new TimeseriesResultBuilder(
+        DateTimes.of("2012-01-01T00:00:00Z")
+    );
+    final CountAggregator rows = new CountAggregator();
+    rows.aggregate();
+    builder.addMetric("rows", rows.get());
+    return builder.build();
   }
 
   private void validate(ObjectMapper mapper, SegmentDescriptor descriptor, ResponseContext responseContext)
       throws IOException
   {
     List<SegmentDescriptor> missingSegments = responseContext.getMissingSegments();
-    Assert.assertTrue(missingSegments != null);
+    Assertions.assertTrue(missingSegments != null);
 
     SegmentDescriptor segmentDesc = missingSegments.get(0);
     SegmentDescriptor newDesc = mapper.readValue(mapper.writeValueAsString(segmentDesc), SegmentDescriptor.class);
-    Assert.assertEquals(descriptor, newDesc);
+    Assertions.assertEquals(descriptor, newDesc);
   }
 }
