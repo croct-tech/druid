@@ -21,8 +21,10 @@ package org.apache.druid.data.input.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.exc.InvalidTypeIdException;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.druid.segment.AutoTypeColumnSchema;
+import org.apache.druid.segment.column.ColumnType;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 public class DimensionSchemaTest
 {
@@ -32,7 +34,7 @@ public class DimensionSchemaTest
   public void testStringDimensionSchemaSerde() throws Exception
   {
     final StringDimensionSchema schema1 = new StringDimensionSchema("foo");
-    Assert.assertEquals(
+    Assertions.assertEquals(
         schema1,
         OBJECT_MAPPER.readValue(OBJECT_MAPPER.writeValueAsString(schema1), DimensionSchema.class)
     );
@@ -42,7 +44,7 @@ public class DimensionSchemaTest
         DimensionSchema.MultiValueHandling.ARRAY,
         false
     );
-    Assert.assertEquals(
+    Assertions.assertEquals(
         schema2,
         OBJECT_MAPPER.readValue(OBJECT_MAPPER.writeValueAsString(schema2), DimensionSchema.class)
     );
@@ -52,21 +54,66 @@ public class DimensionSchemaTest
   public void testDeserializeStrictTypeId() throws Exception
   {
     final String invalidType = "{\"type\":\"invalid\",\"name\":\"foo\",\"multiValueHandling\":\"ARRAY\",\"createBitmapIndex\":false}";
-    InvalidTypeIdException e = Assert.assertThrows(
+    InvalidTypeIdException e = Assertions.assertThrows(
         InvalidTypeIdException.class,
         () -> OBJECT_MAPPER.readValue(invalidType, DimensionSchema.class)
     );
-    Assert.assertTrue(e.getMessage().contains("Could not resolve type id"));
-    Assert.assertTrue(e.getMessage().contains("invalid"));
+    Assertions.assertTrue(e.getMessage().contains("Could not resolve type id"));
+    Assertions.assertTrue(e.getMessage().contains("invalid"));
   }
 
   @Test
   public void testDeserializeDefaultAsString() throws Exception
   {
     final String noType = "{\"name\":\"foo\",\"multiValueHandling\":\"ARRAY\",\"createBitmapIndex\":false}";
-    Assert.assertEquals(
+    Assertions.assertEquals(
         new StringDimensionSchema("foo", DimensionSchema.MultiValueHandling.ARRAY, false),
         OBJECT_MAPPER.readValue(noType, DimensionSchema.class)
+    );
+  }
+
+  @Test
+  public void testGetDefaultSchemaForBuiltInType()
+  {
+    Assertions.assertEquals(
+        new StringDimensionSchema("foo"),
+        DimensionSchema.getDefaultSchemaForBuiltInType("foo", ColumnType.STRING)
+    );
+    Assertions.assertEquals(
+        new LongDimensionSchema("foo"),
+        DimensionSchema.getDefaultSchemaForBuiltInType("foo", ColumnType.LONG)
+    );
+    Assertions.assertEquals(
+        new FloatDimensionSchema("foo"),
+        DimensionSchema.getDefaultSchemaForBuiltInType("foo", ColumnType.FLOAT)
+    );
+    Assertions.assertEquals(
+        new DoubleDimensionSchema("foo"),
+        DimensionSchema.getDefaultSchemaForBuiltInType("foo", ColumnType.DOUBLE)
+    );
+    // Primitive arrays cast an auto column to the given type rather than leaving the physical type to be inferred
+    // from the ingested values (an all-null batch has no values to infer the array type from). The auto schema
+    // stores ARRAY<FLOAT> as ARRAY<DOUBLE>.
+    Assertions.assertEquals(
+        new AutoTypeColumnSchema("foo", ColumnType.STRING_ARRAY, null),
+        DimensionSchema.getDefaultSchemaForBuiltInType("foo", ColumnType.STRING_ARRAY)
+    );
+    Assertions.assertEquals(
+        new AutoTypeColumnSchema("foo", ColumnType.LONG_ARRAY, null),
+        DimensionSchema.getDefaultSchemaForBuiltInType("foo", ColumnType.LONG_ARRAY)
+    );
+    Assertions.assertEquals(
+        new AutoTypeColumnSchema("foo", ColumnType.DOUBLE_ARRAY, null),
+        DimensionSchema.getDefaultSchemaForBuiltInType("foo", ColumnType.FLOAT_ARRAY)
+    );
+    // Complex types remain untyped auto columns.
+    Assertions.assertEquals(
+        AutoTypeColumnSchema.of("foo"),
+        DimensionSchema.getDefaultSchemaForBuiltInType("foo", ColumnType.NESTED_DATA)
+    );
+    Assertions.assertEquals(
+        AutoTypeColumnSchema.of("foo"),
+        DimensionSchema.getDefaultSchemaForBuiltInType("foo", ColumnType.ofComplex("hyperUnique"))
     );
   }
 }

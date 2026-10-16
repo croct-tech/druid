@@ -24,16 +24,6 @@ import com.google.common.base.Optional;
 import com.google.common.base.Suppliers;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import org.apache.druid.data.input.InputFormat;
-import org.apache.druid.data.input.impl.CSVParseSpec;
-import org.apache.druid.data.input.impl.CsvInputFormat;
-import org.apache.druid.data.input.impl.DelimitedInputFormat;
-import org.apache.druid.data.input.impl.DelimitedParseSpec;
-import org.apache.druid.data.input.impl.JSONParseSpec;
-import org.apache.druid.data.input.impl.JsonInputFormat;
-import org.apache.druid.data.input.impl.ParseSpec;
-import org.apache.druid.data.input.impl.RegexInputFormat;
-import org.apache.druid.data.input.impl.RegexParseSpec;
 import org.apache.druid.indexer.TaskStatus;
 import org.apache.druid.indexer.report.IngestionStatsAndErrors;
 import org.apache.druid.indexer.report.IngestionStatsAndErrorsTaskReport;
@@ -63,7 +53,6 @@ import org.apache.druid.indexing.overlord.supervisor.SupervisorManager;
 import org.apache.druid.indexing.test.TestDataSegmentKiller;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.Pair;
-import org.apache.druid.java.util.common.RE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.concurrent.ScheduledExecutors;
 import org.apache.druid.java.util.emitter.EmittingLogger;
@@ -83,6 +72,7 @@ import org.apache.druid.segment.SegmentSchemaMapping;
 import org.apache.druid.segment.TestIndex;
 import org.apache.druid.segment.incremental.RowIngestionMetersFactory;
 import org.apache.druid.segment.join.NoopJoinableFactory;
+import org.apache.druid.segment.loading.DeepStorageSegmentConfig;
 import org.apache.druid.segment.loading.LocalDataSegmentPusher;
 import org.apache.druid.segment.loading.LocalDataSegmentPusherConfig;
 import org.apache.druid.segment.loading.SegmentCacheManager;
@@ -91,20 +81,20 @@ import org.apache.druid.segment.metadata.HeapMemoryIndexingStateStorage;
 import org.apache.druid.segment.metadata.IndexingStateCache;
 import org.apache.druid.segment.metadata.SegmentSchemaCache;
 import org.apache.druid.segment.metadata.SegmentSchemaManager;
-import org.apache.druid.segment.realtime.NoopChatHandlerProvider;
+import org.apache.druid.segment.realtime.ChatHandlerProvider;
 import org.apache.druid.server.DruidNode;
 import org.apache.druid.server.coordinator.simulate.TestDruidLeaderSelector;
 import org.apache.druid.server.metrics.NoopServiceEmitter;
 import org.apache.druid.server.security.AuthTestUtils;
 import org.apache.druid.testing.InitializedNullHandlingTest;
+import org.apache.druid.testing.TemporaryFolderExtension;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.utils.JvmUtils;
 import org.joda.time.Period;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.File;
 import java.io.IOException;
@@ -120,10 +110,9 @@ import java.util.stream.Collectors;
 
 public abstract class IngestionTestBase extends InitializedNullHandlingTest
 {
-  @Rule
-  public TemporaryFolder temporaryFolder = new TemporaryFolder();
+  @RegisterExtension
+  public final TemporaryFolderExtension temporaryFolder = TemporaryFolderExtension.testCaseScoped();
 
-  @Rule
   public final TestDerbyConnector.DerbyConnectorRule derbyConnectorRule =
       new TestDerbyConnector.DerbyConnectorRule(CentralizedDatasourceSchemaConfig.enabled(true));
 
@@ -155,12 +144,12 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
   }
 
 
-  @Before
+  @BeforeEach
   public void setUpIngestionTestBase() throws IOException
   {
+    derbyConnectorRule.before();
     EmittingLogger.registerEmitter(new NoopServiceEmitter());
-    temporaryFolder.create();
-    baseDir = temporaryFolder.newFolder();
+    baseDir = temporaryFolder.newFolder("base");
 
     final SQLMetadataConnector connector = derbyConnectorRule.getConnector();
     connector.createTaskTables();
@@ -198,8 +187,8 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
     );
     lockbox = new GlobalTaskLockbox(taskStorage, storageCoordinator);
     lockbox.syncFromStorage();
-    segmentCacheManagerFactory = new SegmentCacheManagerFactory(TestIndex.INDEX_IO, getObjectMapper());
-    reportsFile = temporaryFolder.newFile();
+    segmentCacheManagerFactory = SegmentCacheManagerFactory.createWithOwnedPool(TestIndex.INDEX_IO, getObjectMapper());
+    reportsFile = temporaryFolder.newFile("reports.json");
     dataSegmentKiller = new TestDataSegmentKiller();
     taskActionToolbox = createTaskActionToolbox();
 
@@ -207,12 +196,12 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
     segmentMetadataCache.becomeLeader();
   }
 
-  @After
+  @AfterEach
   public void tearDownIngestionTestBase()
   {
-    temporaryFolder.delete();
     segmentMetadataCache.stopBeingLeader();
     segmentMetadataCache.stop();
+    derbyConnectorRule.after();
   }
 
   public TestLocalTaskActionClientFactory createActionClientFactory()
@@ -238,7 +227,7 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
 
   public SegmentCacheManager newSegmentLoader(File storageDir)
   {
-    return segmentCacheManagerFactory.manufacturate(storageDir, true);
+    return segmentCacheManagerFactory.manufacturate(storageDir, null, true, false);
   }
 
   public ObjectMapper getObjectMapper()
@@ -312,7 +301,7 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
         .config(config)
         .taskExecutorNode(new DruidNode("druid/middlemanager", "localhost", false, 8091, null, true, false))
         .taskActionClient(createActionClient(task))
-        .segmentPusher(new LocalDataSegmentPusher(new LocalDataSegmentPusherConfig()))
+        .segmentPusher(new LocalDataSegmentPusher(new LocalDataSegmentPusherConfig(), new DeepStorageSegmentConfig()))
         .dataSegmentKiller(dataSegmentKiller)
         .joinableFactory(NoopJoinableFactory.INSTANCE)
         .jsonMapper(objectMapper)
@@ -322,7 +311,7 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
                               .create(task.getContextValue(Tasks.STORE_EMPTY_COLUMNS_KEY, true)))
         .taskReportFileWriter(new NoopTestTaskReportFileWriter())
         .authorizerMapper(AuthTestUtils.TEST_AUTHORIZER_MAPPER)
-        .chatHandlerProvider(new NoopChatHandlerProvider())
+        .chatHandlerProvider(new ChatHandlerProvider())
         .rowIngestionMetersFactory(testUtils.getRowIngestionMetersFactory())
         .appenderatorsManager(new TestAppenderatorsManager())
         .taskLogPusher(null)
@@ -338,9 +327,11 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
         = useSegmentMetadataCache
           ? SegmentMetadataCache.UsageMode.ALWAYS
           : SegmentMetadataCache.UsageMode.NEVER;
+    final SegmentsMetadataManagerConfig managerConfig =
+        new SegmentsMetadataManagerConfig(Period.millis(10), cacheMode, null);
     segmentMetadataCache = new HeapMemorySegmentMetadataCache(
         objectMapper,
-        Suppliers.ofInstance(new SegmentsMetadataManagerConfig(Period.millis(10), cacheMode, null)),
+        Suppliers.ofInstance(managerConfig),
         derbyConnectorRule.metadataTablesConfigSupplier(),
         segmentSchemaCache,
         indexingStateCache,
@@ -358,6 +349,7 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
         derbyConnectorRule.getConnector(),
         leaderSelector,
         segmentMetadataCache,
+        managerConfig,
         NoopServiceEmitter.instance()
     );
   }
@@ -370,48 +362,6 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
   public IndexMergerV9Factory getIndexMergerV9Factory()
   {
     return testUtils.getIndexMergerV9Factory();
-  }
-
-  /**
-   * Converts ParseSpec to InputFormat for indexing tests. Used for backwards compatibility
-   */
-  public static InputFormat createInputFormatFromParseSpec(ParseSpec parseSpec)
-  {
-    if (parseSpec instanceof JSONParseSpec) {
-      JSONParseSpec jsonParseSpec = (JSONParseSpec) parseSpec;
-      return new JsonInputFormat(jsonParseSpec.getFlattenSpec(), jsonParseSpec.getFeatureSpec(), jsonParseSpec.getKeepNullColumns(), null, null);
-    } else if (parseSpec instanceof CSVParseSpec) {
-      CSVParseSpec csvParseSpec = (CSVParseSpec) parseSpec;
-      boolean getColumnsFromHeader = csvParseSpec.isHasHeaderRow() && csvParseSpec.getSkipHeaderRows() == 0;
-      return new CsvInputFormat(
-          csvParseSpec.getColumns(),
-          csvParseSpec.getListDelimiter(),
-          getColumnsFromHeader ? null : true,
-          getColumnsFromHeader ? true : null,
-          csvParseSpec.getSkipHeaderRows(),
-          null
-      );
-    } else if (parseSpec instanceof DelimitedParseSpec) {
-      DelimitedParseSpec delimitedParseSpec = (DelimitedParseSpec) parseSpec;
-      boolean getColumnsFromHeader = delimitedParseSpec.isHasHeaderRow() && delimitedParseSpec.getSkipHeaderRows() == 0;
-      return new DelimitedInputFormat(
-          delimitedParseSpec.getColumns(),
-          delimitedParseSpec.getListDelimiter(),
-          delimitedParseSpec.getDelimiter(),
-          getColumnsFromHeader ? null : true,
-          getColumnsFromHeader ? true : null,
-          delimitedParseSpec.getSkipHeaderRows(),
-          null
-      );
-    } else if (parseSpec instanceof RegexParseSpec) {
-      RegexParseSpec regexParseSpec = (RegexParseSpec) parseSpec;
-      return new RegexInputFormat(
-          regexParseSpec.getPattern(),
-          regexParseSpec.getListDelimiter(),
-          regexParseSpec.getColumns());
-    } else {
-      throw new RE(StringUtils.format("Unsupported ParseSpec format %s", parseSpec.toString()));
-    }
   }
 
   public class TestLocalTaskActionClientFactory implements TaskActionClientFactory
@@ -429,7 +379,7 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
     private final SegmentSchemaMapping segmentSchemaMapping
         = new SegmentSchemaMapping(CentralizedDatasourceSchemaConfig.SCHEMA_VERSION);
 
-    private TestLocalTaskActionClient(Task task)
+    public TestLocalTaskActionClient(Task task)
     {
       super(task, taskStorage, getTaskActionToolbox());
     }
@@ -521,7 +471,8 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
         lockbox.add(task);
         taskStorage.insert(task, TaskStatus.running(task.getId()));
         taskActionClient = createActionClient(task);
-        taskReportsFile = temporaryFolder.newFile(
+        taskReportsFile = new File(
+            temporaryFolder.getRoot(),
             StringUtils.format("ingestionTestBase-%s.json", System.currentTimeMillis())
         );
 
@@ -532,7 +483,7 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
             .config(config)
             .taskExecutorNode(new DruidNode("druid/middlemanager", "localhost", false, 8091, null, true, false))
             .taskActionClient(taskActionClient)
-            .segmentPusher(new LocalDataSegmentPusher(new LocalDataSegmentPusherConfig()))
+            .segmentPusher(new LocalDataSegmentPusher(new LocalDataSegmentPusherConfig(), new DeepStorageSegmentConfig()))
             .dataSegmentKiller(dataSegmentKiller)
             .joinableFactory(NoopJoinableFactory.INSTANCE)
             .jsonMapper(objectMapper)
@@ -542,7 +493,7 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
                                   .create(task.getContextValue(Tasks.STORE_EMPTY_COLUMNS_KEY, true)))
             .taskReportFileWriter(new SingleFileTaskReportFileWriter(taskReportsFile))
             .authorizerMapper(AuthTestUtils.TEST_AUTHORIZER_MAPPER)
-            .chatHandlerProvider(new NoopChatHandlerProvider())
+            .chatHandlerProvider(new ChatHandlerProvider())
             .rowIngestionMetersFactory(testUtils.getRowIngestionMetersFactory())
             .appenderatorsManager(new TestAppenderatorsManager())
             .taskLogPusher(null)
@@ -644,13 +595,13 @@ public abstract class IngestionTestBase extends InitializedNullHandlingTest
         continue;
       }
       nonTombstoneSegments++;
-      Assert.assertTrue(
+      Assertions.assertTrue(
           dataSegmentsWithSchemas.getSegmentSchemaMapping()
                                  .getSegmentIdToMetadataMap()
                                  .containsKey(segment.getId().toString())
       );
     }
-    Assert.assertEquals(
+    Assertions.assertEquals(
         nonTombstoneSegments,
         dataSegmentsWithSchemas.getSegmentSchemaMapping().getSegmentIdToMetadataMap().size()
     );

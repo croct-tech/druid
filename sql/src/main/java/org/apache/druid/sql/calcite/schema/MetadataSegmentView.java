@@ -23,25 +23,37 @@ import com.google.common.base.Preconditions;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Iterators;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.inject.Inject;
 import org.apache.druid.client.BrokerSegmentWatcherConfig;
 import org.apache.druid.client.DataSegmentInterner;
 import org.apache.druid.client.coordinator.CoordinatorClient;
+import org.apache.druid.collections.ResourceHolder;
 import org.apache.druid.common.guava.FutureUtils;
 import org.apache.druid.concurrent.LifecycleLock;
 import org.apache.druid.guice.ManageLifecycle;
+import org.apache.druid.java.util.common.CloseableIterators;
 import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.java.util.common.Stopwatch;
 import org.apache.druid.java.util.common.concurrent.Execs;
+import org.apache.druid.java.util.common.concurrent.ScheduledExecutors;
 import org.apache.druid.java.util.common.lifecycle.LifecycleStart;
 import org.apache.druid.java.util.common.lifecycle.LifecycleStop;
 import org.apache.druid.java.util.common.parsers.CloseableIterator;
 import org.apache.druid.java.util.emitter.EmittingLogger;
+import org.apache.druid.java.util.emitter.service.ServiceEmitter;
+import org.apache.druid.java.util.emitter.service.ServiceMetricEvent;
 import org.apache.druid.metadata.SegmentsMetadataManager;
+import org.apache.druid.metadata.segment.cache.Metric;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.SegmentId;
 import org.apache.druid.timeline.SegmentStatusInCluster;
+import org.apache.druid.utils.CloseableUtils;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.joda.time.Duration;
+
+import javax.annotation.Nullable;
 
 import java.util.Iterator;
 import java.util.Set;
@@ -81,12 +93,14 @@ public class MetadataSegmentView
   private final long pollPeriodInMS;
   private final LifecycleLock lifecycleLock = new LifecycleLock();
   private final CountDownLatch cachePopulated = new CountDownLatch(1);
+  private final ServiceEmitter emitter;
 
   @Inject
   public MetadataSegmentView(
       final CoordinatorClient coordinatorClient,
       final BrokerSegmentWatcherConfig segmentWatcherConfig,
-      final BrokerSegmentMetadataCacheConfig config
+      final BrokerSegmentMetadataCacheConfig config,
+      final ServiceEmitter emitter
   )
   {
     Preconditions.checkNotNull(config, "BrokerSegmentMetadataCacheConfig");
@@ -95,6 +109,7 @@ public class MetadataSegmentView
     this.isCacheEnabled = config.isMetadataSegmentCacheEnable();
     this.pollPeriodInMS = config.getMetadataSegmentPollPeriod();
     this.scheduledExec = Execs.scheduledSingleThreaded("MetadataSegmentView-Cache--%d");
+    this.emitter = emitter;
     this.segmentIdToReplicationFactor = CacheBuilder.newBuilder()
                                                     .expireAfterAccess(10, TimeUnit.MINUTES)
                                                     .build();
@@ -108,7 +123,12 @@ public class MetadataSegmentView
     }
     try {
       if (isCacheEnabled) {
-        scheduledExec.schedule(new PollTask(), pollPeriodInMS, TimeUnit.MILLISECONDS);
+        ScheduledExecutors.scheduleAtFixedRate(
+            scheduledExec,
+            Duration.millis(Math.min(pollPeriodInMS, 500L)),
+            Duration.millis(pollPeriodInMS),
+            this::poll
+        );
       }
       lifecycleLock.started();
       log.info("MetadataSegmentView is started.");
@@ -127,6 +147,8 @@ public class MetadataSegmentView
     log.info("MetadataSegmentView is stopping.");
     if (isCacheEnabled) {
       scheduledExec.shutdown();
+      publishedSegments = null;
+      segmentIdToReplicationFactor.invalidateAll();
     }
     log.info("MetadataSegmentView is stopped.");
   }
@@ -134,84 +156,88 @@ public class MetadataSegmentView
   private void poll()
   {
     log.info("Polling segments from coordinator");
-    final CloseableIterator<SegmentStatusInCluster> metadataSegments = getMetadataSegments(
-        coordinatorClient,
-        segmentWatcherConfig.getWatchedDataSources()
-    );
+    final Stopwatch syncTime = Stopwatch.createStarted();
 
     final ImmutableSortedSet.Builder<SegmentStatusInCluster> builder = ImmutableSortedSet.naturalOrder();
-    while (metadataSegments.hasNext()) {
-      final SegmentStatusInCluster segment = metadataSegments.next();
-      final DataSegment interned = DataSegmentInterner.intern(segment.getDataSegment());
-      Integer replicationFactor = segment.getReplicationFactor();
-      if (replicationFactor == null) {
-        replicationFactor = segmentIdToReplicationFactor.getIfPresent(segment.getDataSegment().getId());
-      } else {
-        segmentIdToReplicationFactor.put(segment.getDataSegment().getId(), segment.getReplicationFactor());
+    final ResourceHolder<Iterator<SegmentStatusInCluster>> metadataSegments = fetchSegmentMetadataFromCoordinator();
+    try {
+      final Iterator<SegmentStatusInCluster> segments = metadataSegments.get();
+      while (segments.hasNext()) {
+        final SegmentStatusInCluster segment = segments.next();
+        final DataSegment interned = DataSegmentInterner.intern(segment.getDataSegment());
+        Integer replicationFactor = segment.getReplicationFactor();
+        if (replicationFactor == null) {
+          replicationFactor = segmentIdToReplicationFactor.getIfPresent(segment.getDataSegment().getId());
+        } else {
+          segmentIdToReplicationFactor.put(segment.getDataSegment().getId(), segment.getReplicationFactor());
+        }
+        final SegmentStatusInCluster segmentStatusInCluster = new SegmentStatusInCluster(
+            interned,
+            segment.isOvershadowed(),
+            replicationFactor,
+            segment.getNumRows(),
+            segment.isRealtime()
+        );
+        builder.add(segmentStatusInCluster);
       }
-      final SegmentStatusInCluster segmentStatusInCluster = new SegmentStatusInCluster(
-          interned,
-          segment.isOvershadowed(),
-          replicationFactor,
-          segment.getNumRows(),
-          segment.isRealtime()
+    }
+    finally {
+      CloseableUtils.closeAndSuppressExceptions(
+          metadataSegments,
+          e -> log.warn(e, "Failed to close the segment metadata response from the Coordinator")
       );
-      builder.add(segmentStatusInCluster);
     }
     publishedSegments = builder.build();
     cachePopulated.countDown();
+    emitter.emit(
+        ServiceMetricEvent.builder().setMetric(Metric.SYNC_DURATION_MILLIS, syncTime.millisElapsed())
+    );
   }
 
-  Iterator<SegmentStatusInCluster> getSegments()
+  /**
+   * Returns segment metadata either from the in-memory cache (enabled using
+   * {@link BrokerSegmentMetadataCacheConfig#isMetadataSegmentCacheEnable()})
+   * OR by querying the Coordinator on the fly.
+   */
+  CloseableIterator<SegmentStatusInCluster> getSegments()
   {
+    return getSegments(null);
+  }
+
+  /**
+   * Returns published (and, with centralized schema, realtime) segment metadata, optionally
+   * restricted to {@code dataSources}.
+   */
+  CloseableIterator<SegmentStatusInCluster> getSegments(@Nullable Set<String> dataSources)
+  {
+    final CloseableIterator<SegmentStatusInCluster> base;
     if (isCacheEnabled) {
       Uninterruptibles.awaitUninterruptibly(cachePopulated);
-      return publishedSegments.iterator();
+      base = CloseableIterators.withEmptyBaggage(publishedSegments.iterator());
     } else {
-      return getMetadataSegments(
-          coordinatorClient,
-          segmentWatcherConfig.getWatchedDataSources()
-      );
+      // Cache disabled: the Coordinator returns all used segments; filter client-side to preserve semantics.
+      final ResourceHolder<Iterator<SegmentStatusInCluster>> fetched = fetchSegmentMetadataFromCoordinator();
+      base = CloseableIterators.wrap(fetched.get(), fetched);
     }
+    return dataSources == null
+           ? base
+           : CloseableIterators.wrap(
+               Iterators.filter(base, s -> dataSources.contains(s.getDataSegment().getDataSource())),
+               base
+           );
   }
 
   // Note that coordinator must be up to get segments
-  private CloseableIterator<SegmentStatusInCluster> getMetadataSegments(
-      CoordinatorClient coordinatorClient,
-      Set<String> watchedDataSources
-  )
+  private ResourceHolder<Iterator<SegmentStatusInCluster>> fetchSegmentMetadataFromCoordinator()
   {
     // includeRealtimeSegments flag would additionally request realtime segments
     // note that realtime segments are returned only when druid.centralizedDatasourceSchema.enabled is set on the Coordinator
     return FutureUtils.getUnchecked(
-        coordinatorClient.fetchAllUsedSegmentsWithOvershadowedStatus(watchedDataSources, true),
+        coordinatorClient.fetchAllUsedSegmentsWithOvershadowedStatus(
+            segmentWatcherConfig.getWatchedDataSources(),
+            true
+        ),
         true
     );
   }
-
-  private class PollTask implements Runnable
-  {
-    @Override
-    public void run()
-    {
-      long delayMS = pollPeriodInMS;
-      try {
-        final long pollStartTime = System.nanoTime();
-        poll();
-        final long pollEndTime = System.nanoTime();
-        final long pollTimeNS = pollEndTime - pollStartTime;
-        final long pollTimeMS = TimeUnit.NANOSECONDS.toMillis(pollTimeNS);
-        delayMS = Math.max(pollPeriodInMS - pollTimeMS, 0);
-      }
-      catch (Exception e) {
-        log.makeAlert(e, "Problem polling Coordinator.").emit();
-      }
-      finally {
-        if (!Thread.currentThread().isInterrupted()) {
-          scheduledExec.schedule(new PollTask(), delayMS, TimeUnit.MILLISECONDS);
-        }
-      }
-    }
-  }
-
 }

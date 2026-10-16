@@ -51,7 +51,7 @@ import org.apache.druid.query.DruidProcessingConfig;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryCapacityExceededException;
 import org.apache.druid.query.QueryContext;
-import org.apache.druid.query.QueryContexts;
+import org.apache.druid.query.QueryContextBuilder;
 import org.apache.druid.query.QueryMetrics;
 import org.apache.druid.query.QueryPlus;
 import org.apache.druid.query.QueryProcessingPool;
@@ -61,6 +61,7 @@ import org.apache.druid.query.ResourceLimitExceededException;
 import org.apache.druid.query.ResultMergeQueryRunner;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.PostAggregator;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
 import org.apache.druid.query.dimension.DimensionSpec;
@@ -75,6 +76,7 @@ import org.apache.druid.query.groupby.orderby.DefaultLimitSpec;
 import org.apache.druid.query.groupby.orderby.LimitSpec;
 import org.apache.druid.query.groupby.orderby.NoopLimitSpec;
 import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
+import org.apache.druid.segment.AsyncCursorHolder;
 import org.apache.druid.segment.ColumnInspector;
 import org.apache.druid.segment.CursorBuildSpec;
 import org.apache.druid.segment.CursorFactory;
@@ -112,6 +114,7 @@ import java.util.stream.Collectors;
 public class GroupingEngine
 {
   public static final String CTX_KEY_FUDGE_TIMESTAMP = "fudgeTimestamp";
+  // Internal merge marker; this is not a public query context parameter descriptor.
   public static final String CTX_KEY_OUTERMOST = "groupByOutermost";
 
   private final DruidProcessingConfig processingConfig;
@@ -221,9 +224,9 @@ public class GroupingEngine
   public GroupByQuery prepareGroupByQuery(GroupByQuery query)
   {
     // Set up downstream context.
-    final ImmutableMap.Builder<String, Object> context = ImmutableMap.builder();
-    context.put(QueryContexts.FINALIZE_KEY, false);
-    context.put(CTX_KEY_OUTERMOST, false);
+    final QueryContextBuilder context = QueryContext.builder();
+    context.put(QueryContextParameters.FINALIZE, false);
+    context.putRaw(CTX_KEY_OUTERMOST, false);
 
     Granularity granularity = query.getGranularity();
     List<DimensionSpec> dimensionSpecs = query.getDimensions();
@@ -267,12 +270,12 @@ public class GroupingEngine
       // otherwise the downstream is sorted by row's timestamp first which makes the final ordering not as expected
       int timestampResultFieldIndex = queryContext.getInt(GroupByQuery.CTX_TIMESTAMP_RESULT_FIELD_INDEX, 0);
       if (!query.getContextSortByDimsFirst() && timestampResultFieldIndex == query.getDimensions().size() - 1) {
-        context.put(GroupByQuery.CTX_KEY_SORT_BY_DIMS_FIRST, true);
+        context.putRaw(GroupByQuery.CTX_KEY_SORT_BY_DIMS_FIRST, true);
       }
       // when timestampResultField is the first dimension and sortByDimsFirst=true,
       // it is actually equals to sortByDimsFirst=false
       if (query.getContextSortByDimsFirst() && timestampResultFieldIndex == 0) {
-        context.put(GroupByQuery.CTX_KEY_SORT_BY_DIMS_FIRST, false);
+        context.putRaw(GroupByQuery.CTX_KEY_SORT_BY_DIMS_FIRST, false);
       }
       // when hasTimestampResultField=true and timestampResultField is neither first nor last dimension,
       // the DefaultLimitSpec will always do the reordering
@@ -281,14 +284,14 @@ public class GroupingEngine
       // universalTimestamp works only when granularity is all
       // hasTimestampResultField works only when granularity is all
       // fudgeTimestamp should not be used when hasTimestampResultField=true due to the row's actual timestamp is used
-      context.put(CTX_KEY_FUDGE_TIMESTAMP, String.valueOf(query.getUniversalTimestamp().getMillis()));
+      context.putRaw(CTX_KEY_FUDGE_TIMESTAMP, String.valueOf(query.getUniversalTimestamp().getMillis()));
     }
 
     // The having spec shouldn't be passed down, so we need to convey the existing limit push down status
-    context.put(GroupByQueryConfig.CTX_KEY_APPLY_LIMIT_PUSH_DOWN, query.isApplyLimitPushDown());
+    context.putRaw(GroupByQueryConfig.CTX_KEY_APPLY_LIMIT_PUSH_DOWN, query.isApplyLimitPushDown());
 
     // Always request array result rows when passing the query downstream.
-    context.put(GroupByQueryConfig.CTX_KEY_ARRAY_RESULT_ROWS, true);
+    context.putRaw(GroupByQueryConfig.CTX_KEY_ARRAY_RESULT_ROWS, true);
 
     return new GroupByQuery(
         query.getDataSource(),
@@ -310,7 +313,7 @@ public class GroupingEngine
         query.getSubtotalsSpec(),
         query.getContext()
     ).withOverriddenContext(
-        context.build()
+        context.toMap()
     );
   }
 
@@ -482,8 +485,49 @@ public class GroupingEngine
       @Nullable GroupByQueryMetrics groupByQueryMetrics
   )
   {
-    final GroupByQueryConfig querySpecificConfig = configSupplier.get().withOverrides(query);
+    validateForProcess(query, cursorFactory);
+    final CursorBuildSpec buildSpec = makeCursorBuildSpec(query, groupByQueryMetrics);
+    final CursorHolder cursorHolder = cursorFactory.makeCursorHolder(buildSpec);
+    return processWithCursorHolder(query, cursorFactory, cursorHolder, timeBoundaryInspector, bufferPool, buildSpec);
+  }
 
+  /**
+   * Obtain an {@link AsyncCursorHolder} for this query's cursor build spec. Pairs with {@link #processCursorHolder},
+   * allowing a non-blocking caller to call this, yield until the returned holder is ready, and then call
+   * {@link #processCursorHolder} on its processing thread to run the actual aggregation.
+   */
+  public AsyncCursorHolder makeCursorHolderAsync(
+      GroupByQuery query,
+      CursorFactory cursorFactory,
+      @Nullable GroupByQueryMetrics groupByQueryMetrics
+  )
+  {
+    validateForProcess(query, cursorFactory);
+    final CursorBuildSpec buildSpec = makeCursorBuildSpec(query, groupByQueryMetrics);
+    return cursorFactory.makeCursorHolderAsync(buildSpec);
+  }
+
+  /**
+   * Run the aggregation against an already-loaded {@link CursorHolder}. The caller is responsible for acquiring the
+   * holder (either directly from a {@link CursorFactory#makeCursorHolder} as we do in {@link #process} or using
+   * {@link #makeCursorHolderAsync} + {@link AsyncCursorHolder#release})
+   */
+  public Sequence<ResultRow> processCursorHolder(
+      GroupByQuery query,
+      CursorFactory cursorFactory,
+      CursorHolder cursorHolder,
+      @Nullable TimeBoundaryInspector timeBoundaryInspector,
+      NonBlockingPool<ByteBuffer> bufferPool,
+      @Nullable GroupByQueryMetrics groupByQueryMetrics
+  )
+  {
+    validateForProcess(query, cursorFactory);
+    final CursorBuildSpec buildSpec = makeCursorBuildSpec(query, groupByQueryMetrics);
+    return processWithCursorHolder(query, cursorFactory, cursorHolder, timeBoundaryInspector, bufferPool, buildSpec);
+  }
+
+  private static void validateForProcess(GroupByQuery query, @Nullable CursorFactory cursorFactory)
+  {
     if (cursorFactory == null) {
       throw new ISE(
           "Null cursor factory found. Probably trying to issue a query against a segment being memory unmapped."
@@ -494,20 +538,34 @@ public class GroupingEngine
     if (intervals.size() != 1) {
       throw new IAE("Should only have one interval, got[%s]", intervals);
     }
+  }
 
-    final ResourceHolder<ByteBuffer> bufferHolder = bufferPool.take();
+  private Sequence<ResultRow> processWithCursorHolder(
+      GroupByQuery query,
+      CursorFactory cursorFactory,
+      CursorHolder cursorHolder,
+      @Nullable TimeBoundaryInspector timeBoundaryInspector,
+      NonBlockingPool<ByteBuffer> bufferPool,
+      CursorBuildSpec buildSpec
+  )
+  {
+    // Register the cursor holder on the closer before any work that could throw, so a single catch path covers
+    // every cleanup scenario (bufferPool.take() failure, pipeline construction failure, etc.) and the original
+    // exception is preserved with any close errors as suppressed.
+    final Closer closer = Closer.create();
+    closer.register(cursorHolder);
 
-    Closer closer = Closer.create();
-    closer.register(bufferHolder);
+    final GroupByQueryConfig querySpecificConfig;
     try {
-      final String fudgeTimestampString = query.context().getString(GroupingEngine.CTX_KEY_FUDGE_TIMESTAMP);
+      querySpecificConfig = configSupplier.get().withOverrides(query);
 
+      final ResourceHolder<ByteBuffer> bufferHolder = bufferPool.take();
+      closer.register(bufferHolder);
+
+      final String fudgeTimestampString = query.context().getString(GroupingEngine.CTX_KEY_FUDGE_TIMESTAMP);
       final DateTime fudgeTimestamp = fudgeTimestampString == null
                                       ? null
                                       : DateTimes.utc(Long.parseLong(fudgeTimestampString));
-
-      final CursorBuildSpec buildSpec = makeCursorBuildSpec(query, groupByQueryMetrics);
-      final CursorHolder cursorHolder = closer.register(cursorFactory.makeCursorHolder(buildSpec));
 
       if (cursorHolder.isPreAggregated()) {
         query = query.withAggregatorSpecs(Preconditions.checkNotNull(cursorHolder.getAggregatorsForPreAggregated()));
@@ -546,8 +604,7 @@ public class GroupingEngine
       return result.withBaggage(closer);
     }
     catch (Throwable e) {
-      CloseableUtils.closeAndWrapExceptions(closer);
-      throw e;
+      throw CloseableUtils.closeAndWrapInCatch(e, closer);
     }
   }
 

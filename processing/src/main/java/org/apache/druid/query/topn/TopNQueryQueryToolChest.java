@@ -44,7 +44,6 @@ import org.apache.druid.query.CacheStrategy;
 import org.apache.druid.query.FrameSignaturePair;
 import org.apache.druid.query.IterableRowsCursorHelper;
 import org.apache.druid.query.Query;
-import org.apache.druid.query.QueryContexts;
 import org.apache.druid.query.QueryPlus;
 import org.apache.druid.query.QueryRunner;
 import org.apache.druid.query.QueryToolChest;
@@ -57,6 +56,7 @@ import org.apache.druid.query.aggregation.MetricManipulationFn;
 import org.apache.druid.query.aggregation.MetricManipulatorFns;
 import org.apache.druid.query.aggregation.PostAggregator;
 import org.apache.druid.query.cache.CacheKeyBuilder;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
 import org.apache.druid.query.dimension.DimensionSpec;
@@ -451,8 +451,7 @@ public class TopNQueryQueryToolChest extends QueryToolChest<Result<TopNResultVal
   public QueryRunner<Result<TopNResultValue>> postMergeQueryDecoration(final QueryRunner<Result<TopNResultValue>> runner)
   {
     final ThresholdAdjustingQueryRunner thresholdRunner = new ThresholdAdjustingQueryRunner(
-        runner,
-        config
+        runner
     );
     return new QueryRunner<>()
     {
@@ -605,15 +604,12 @@ public class TopNQueryQueryToolChest extends QueryToolChest<Result<TopNResultVal
   static class ThresholdAdjustingQueryRunner implements QueryRunner<Result<TopNResultValue>>
   {
     private final QueryRunner<Result<TopNResultValue>> runner;
-    private final TopNQueryConfig config;
 
     public ThresholdAdjustingQueryRunner(
-        QueryRunner<Result<TopNResultValue>> runner,
-        TopNQueryConfig config
+        QueryRunner<Result<TopNResultValue>> runner
     )
     {
       this.runner = runner;
-      this.config = config;
     }
 
     @Override
@@ -629,7 +625,7 @@ public class TopNQueryQueryToolChest extends QueryToolChest<Result<TopNResultVal
 
       final TopNQuery query = (TopNQuery) input;
       final int minTopNThreshold = query.context()
-                                        .getInt(QueryContexts.MIN_TOP_N_THRESHOLD, config.getMinTopNThreshold());
+                                        .getOrDefault(QueryContextParameters.MIN_TOP_N_THRESHOLD);
       if (query.getThreshold() > minTopNThreshold) {
         return runner.run(queryPlus, responseContext);
       }

@@ -28,7 +28,7 @@ import org.apache.druid.common.exception.ErrorResponseTransformStrategy;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.logger.Logger;
-import org.apache.druid.query.DefaultQueryConfig;
+import org.apache.druid.query.QueryConfigProvider;
 import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryContexts;
 import org.apache.druid.server.QueryResource;
@@ -86,7 +86,7 @@ public class SqlResource
   private final SqlResourceQueryResultPusherFactory resultPusherFactory;
   private final SqlLifecycleManager sqlLifecycleManager;
   private final SqlEngineRegistry sqlEngineRegistry;
-  private final DefaultQueryConfig defaultQueryConfig;
+  private final QueryConfigProvider queryConfigProvider;
   private final ServerConfig serverConfig;
 
   @VisibleForTesting
@@ -96,7 +96,7 @@ public class SqlResource
       final SqlLifecycleManager sqlLifecycleManager,
       final SqlEngineRegistry sqlEngineRegistry,
       final SqlResourceQueryResultPusherFactory resultPusherFactory,
-      final DefaultQueryConfig defaultQueryConfig,
+      final QueryConfigProvider queryConfigProvider,
       final ServerConfig serverConfig
   )
   {
@@ -104,7 +104,7 @@ public class SqlResource
     this.sqlEngineRegistry = Preconditions.checkNotNull(sqlEngineRegistry, "sqlEngineRegistry");
     this.authorizerMapper = Preconditions.checkNotNull(authorizerMapper, "authorizerMapper");
     this.sqlLifecycleManager = Preconditions.checkNotNull(sqlLifecycleManager, "sqlLifecycleManager");
-    this.defaultQueryConfig = Preconditions.checkNotNull(defaultQueryConfig, "defaultQueryConfig");
+    this.queryConfigProvider = Preconditions.checkNotNull(queryConfigProvider, "queryConfigProvider");
     this.serverConfig = serverConfig;
   }
 
@@ -168,7 +168,7 @@ public class SqlResource
     // Get running queries from all engines that support it.
     for (SqlEngine sqlEngine : engines) {
       queries.addAll(
-          sqlEngine.getRunningQueries(
+          sqlEngine.getQueries(
               selfOnly != null,
               includeComplete != null,
               authenticationResult,
@@ -241,7 +241,7 @@ public class SqlResource
     final QueryContext queryContext;
 
     try {
-      SqlQueryPlus sqlQueryPlus = makeSqlQueryPlus(sqlQuery, req, defaultQueryConfig.getContext());
+      final SqlQueryPlus sqlQueryPlus = makeSqlQueryPlus(sqlQuery, req, queryConfigProvider.getContext());
 
       // Redefine queryContext to include SET parameters and default context.
       queryContext = new QueryContext(sqlQueryPlus.context());
@@ -357,7 +357,7 @@ public class SqlResource
                        .sql(sqlQuery.getQuery())
                        .systemDefaultContext(defaultQueryConfig)
                        .queryContext(sqlQuery.getContext())
-                       .parameters(sqlQuery.getParameterList())
+                       .parameters(sqlQuery.getParameters())
                        .auth(AuthorizationUtils.authenticationResultFromRequest(req))
                        .build();
   }
@@ -371,32 +371,36 @@ public class SqlResource
       final ErrorResponseTransformStrategy strategy
   )
   {
+    final String sqlQueryId = queryContext.getString(QueryContexts.CTX_SQL_QUERY_ID);
+    final String errorId = sqlQueryId == null ? UUID.randomUUID().toString() : sqlQueryId;
+
+    final DruidException druidException;
+    final Map<String, String> headers;
     if (e instanceof DruidException) {
-      final String sqlQueryId = queryContext.getString(QueryContexts.CTX_SQL_QUERY_ID);
-      String errorId = sqlQueryId == null ? UUID.randomUUID().toString() : sqlQueryId;
-      Optional<Exception> transformed = strategy.maybeTransform((DruidException) e, Optional.of(errorId));
-      if (transformed.isPresent()) {
-        // Log the exception here itself, since the error has been transformed.
-        log.error(e, StringUtils.format("External Error ID: [%s]", errorId));
-      }
-      return QueryResultPusher.handleDruidExceptionBeforeResponseStarted(
-          (DruidException) transformed.orElse(e),
-          MediaType.APPLICATION_JSON_TYPE,
-          sqlQueryId != null
-          ? ImmutableMap.<String, String>builder()
-                        .put(QueryResource.QUERY_ID_RESPONSE_HEADER, sqlQueryId)
-                        .put(SQL_QUERY_ID_RESPONSE_HEADER, sqlQueryId)
-                        .build()
-          : Collections.emptyMap()
-      );
+      druidException = (DruidException) e;
+      headers = sqlQueryId != null
+                ? ImmutableMap.<String, String>builder()
+                              .put(QueryResource.QUERY_ID_RESPONSE_HEADER, sqlQueryId)
+                              .put(SQL_QUERY_ID_RESPONSE_HEADER, sqlQueryId)
+                              .build()
+                : Collections.emptyMap();
     } else {
-      return QueryResultPusher.handleDruidExceptionBeforeResponseStarted(
-          DruidException.forPersona(DruidException.Persona.OPERATOR)
-                        .ofCategory(DruidException.Category.RUNTIME_FAILURE)
-                        .build(e, "Cannot handle query"),
-          MediaType.APPLICATION_JSON_TYPE,
-          Collections.emptyMap()
-      );
+      druidException = DruidException.forPersona(DruidException.Persona.OPERATOR)
+                                     .ofCategory(DruidException.Category.RUNTIME_FAILURE)
+                                     .build(e, "Cannot handle query");
+      headers = Collections.emptyMap();
     }
+
+    final Optional<DruidException> transformed = strategy.maybeTransform(druidException, Optional.of(errorId));
+    if (transformed.isPresent()) {
+      // Nothing else logs this failure, and the client is only given the error id from here on.
+      log.error(e, StringUtils.format("External Error ID: [%s]", errorId));
+    }
+
+    return QueryResultPusher.handleDruidExceptionBeforeResponseStarted(
+        transformed.orElse(druidException),
+        MediaType.APPLICATION_JSON_TYPE,
+        headers
+    );
   }
 }

@@ -112,7 +112,7 @@ public class CatalogCompactionTest extends EmbeddedClusterTestBase
 
     // Create a catalog compaction config
     CatalogDataSourceCompactionConfig compactionConfig =
-        new CatalogDataSourceCompactionConfig(dataSource, null, Period.ZERO, null, null, null, null);
+        new CatalogDataSourceCompactionConfig(dataSource, null, Period.ZERO, null, null, null, null, null);
 
     final CompactionSupervisorSpec compactionSupervisor
         = new CompactionSupervisorSpec(compactionConfig, false, null);

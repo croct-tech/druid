@@ -22,6 +22,7 @@ package org.apache.druid.msq.dart.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.inject.Injector;
 import org.apache.druid.client.TimelineServerView;
+import org.apache.druid.discovery.DruidNodeDiscovery;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.indexing.common.TaskLockType;
 import org.apache.druid.indexing.common.actions.TaskActionClient;
@@ -40,7 +41,7 @@ import org.apache.druid.msq.exec.WorkerManager;
 import org.apache.druid.msq.indexing.IndexerControllerContext;
 import org.apache.druid.msq.indexing.MSQSpec;
 import org.apache.druid.msq.indexing.destination.TaskReportMSQDestination;
-import org.apache.druid.msq.input.InputSpecSlicer;
+import org.apache.druid.msq.input.InputSpecSlicerProvider;
 import org.apache.druid.msq.kernel.controller.ControllerQueryKernelConfig;
 import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.query.QueryContext;
@@ -52,6 +53,8 @@ import org.apache.druid.server.coordination.ServerType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Dart implementation of {@link ControllerContext}.
@@ -87,8 +90,10 @@ public class DartControllerContext implements ControllerContext
   private final DartWorkerClient workerClient;
   private final TimelineServerView serverView;
   private final MemoryIntrospector memoryIntrospector;
-  private final QueryContext context;
+  private final List<InputSpecSlicerProvider> inputSpecSlicerProviders;
   private final ServiceEmitter emitter;
+  private final QueryContext context;
+  private final DruidNodeDiscovery dartWorkerDiscovery;
 
   public DartControllerContext(
       final Injector injector,
@@ -97,8 +102,10 @@ public class DartControllerContext implements ControllerContext
       final DartWorkerClient workerClient,
       final MemoryIntrospector memoryIntrospector,
       final TimelineServerView serverView,
+      final List<InputSpecSlicerProvider> inputSpecSlicerProviders,
       final ServiceEmitter emitter,
-      final QueryContext context
+      final QueryContext context,
+      final DruidNodeDiscovery dartWorkerDiscovery
   )
   {
     this.injector = injector;
@@ -107,8 +114,10 @@ public class DartControllerContext implements ControllerContext
     this.workerClient = workerClient;
     this.serverView = serverView;
     this.memoryIntrospector = memoryIntrospector;
-    this.context = context;
+    this.inputSpecSlicerProviders = inputSpecSlicerProviders;
     this.emitter = emitter;
+    this.context = context;
+    this.dartWorkerDiscovery = dartWorkerDiscovery;
   }
 
   @Override
@@ -122,15 +131,36 @@ public class DartControllerContext implements ControllerContext
   {
     final List<DruidServerMetadata> servers = serverView.getDruidServerMetadatas();
 
+    final Set<String> dartWorkerHosts =
+        dartWorkerDiscovery.getAllNodes()
+                           .stream()
+                           .map(node -> node.getDruidNode().getHostAndPortToUse())
+                           .collect(Collectors.toSet());
+
     // Lock in the list of workers when creating the kernel config. There is a race here: the serverView itself is
     // allowed to float. If a segment moves to a new server that isn't part of our list after the WorkerManager is
     // created, we won't be able to find a valid server for certain segments. This isn't expected to be a problem,
     // since the serverView is referenced shortly after the worker list is created.
     final List<String> workerIds = new ArrayList<>(servers.size());
     for (final DruidServerMetadata server : servers) {
-      if (server.getType() == ServerType.HISTORICAL) {
+      if (server.getType() == ServerType.HISTORICAL && dartWorkerHosts.contains(server.getHost())) {
         workerIds.add(WorkerId.fromDruidServerMetadata(server, queryId()).toString());
       }
+    }
+
+    // Fail fast rather than running a query with no workers.
+    if (workerIds.isEmpty()) {
+      final boolean anyHistoricals = servers.stream().anyMatch(s -> s.getType() == ServerType.HISTORICAL);
+      throw DruidException.forPersona(DruidException.Persona.OPERATOR)
+                          .ofCategory(DruidException.Category.RUNTIME_FAILURE)
+                          .build(
+                              anyHistoricals
+                              ? "No Dart workers are available: Historicals are present but none advertise a Dart "
+                                + "worker. Set druid.msq.dart.enabled=true on the Historicals that should run Dart "
+                                + "queries."
+                              : "No Dart workers are available: no Historicals are currently available to run the "
+                                + "query."
+                          );
     }
 
     // Shuffle workerIds, so we don't bias towards specific servers when running multiple queries concurrently. For any
@@ -189,9 +219,9 @@ public class DartControllerContext implements ControllerContext
   }
 
   @Override
-  public InputSpecSlicer newTableInputSpecSlicer(WorkerManager workerManager)
+  public List<InputSpecSlicerProvider> inputSpecSlicerProviders()
   {
-    return DartTableInputSpecSlicer.createFromWorkerIds(workerManager.getWorkerIds(), serverView, context);
+    return inputSpecSlicerProviders;
   }
 
   @Override
@@ -210,7 +240,12 @@ public class DartControllerContext implements ControllerContext
   {
     // We're ignoring WorkerFailureListener. Dart worker failures are routed into the controller by
     // ControllerMessageListener, which receives a notification when a worker goes offline.
-    return new DartWorkerManager(queryKernelConfig.getWorkerIds(), workerClient);
+    final List<String> workerIds = queryKernelConfig.getWorkerIds();
+    return new DartWorkerManager(
+        workerIds,
+        workerIds.stream().map(id -> WorkerId.fromString(id).getHostAndPort()).collect(Collectors.toList()),
+        workerClient
+    );
   }
 
   @Override
@@ -229,5 +264,37 @@ public class DartControllerContext implements ControllerContext
   public TaskLockType taskLockType()
   {
     throw DruidException.defensive("TaskLockType is not used with class[%s]", getClass().getName());
+  }
+
+  @Override
+  public int maxNonLeafWorkerCount()
+  {
+    return context.getInt(
+        DartControllerContext.CTX_MAX_NON_LEAF_WORKER_COUNT,
+        DartControllerContext.DEFAULT_MAX_NON_LEAF_WORKER_COUNT
+    );
+  }
+
+  @Override
+  public int targetPartitionsPerWorker()
+  {
+    return MultiStageQueryContext.getTargetPartitionsPerWorkerWithDefault(
+        context,
+        DEFAULT_TARGET_PARTITIONS_PER_WORKER
+    );
+  }
+
+  @Override
+  public boolean isDebug()
+  {
+    return context.isDebug();
+  }
+
+  /**
+   * Getter for {@link DartTableInputSpecSlicerProvider} to retrieve the server view.
+   */
+  TimelineServerView serverView()
+  {
+    return serverView;
   }
 }

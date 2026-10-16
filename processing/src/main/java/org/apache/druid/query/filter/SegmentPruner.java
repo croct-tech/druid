@@ -21,14 +21,69 @@ package org.apache.druid.query.filter;
 
 import org.apache.druid.timeline.DataSegment;
 
+import javax.annotation.Nullable;
 import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.function.Function;
 
 public interface SegmentPruner
 {
   /**
+   * Check if a {@link DataSegment} should be included or not. If this method returns false, the segment can be skipped
+   * during processing.
+   */
+  boolean include(DataSegment segment);
+
+  /**
    * Filter the given {@link Iterable} of objects containing a {@link DataSegment} (obtained from the converter
    * function), to reduce the overall working set which need to be processed.
+   *
+   * @param input      The iterable of objects to be filtered
+   * @param converter  The function to convert T to {@link DataSegment} to {@link #include(DataSegment)}
+   * @param <T>        This can be any type, as long as transform function is provided to extract a {@link DataSegment}
+   *
+   * @return The set of pruned object, in the same order as input
    */
-  <T> Collection<T> prune(Iterable<T> input, Function<T, DataSegment> converter);
+  default <T> Collection<T> prune(Iterable<T> input, Function<T, DataSegment> converter)
+  {
+    // LinkedHashSet retains order from "input".
+    final Set<T> retSet = new LinkedHashSet<>();
+
+    for (T obj : input) {
+      final DataSegment segment = converter.apply(obj);
+      if (segment == null) {
+        continue;
+      }
+
+      if (include(segment)) {
+        retSet.add(obj);
+      }
+    }
+    return retSet;
+  }
+
+  /**
+   * @return combined {@link SegmentPruner}, which if both are of the same type may be merged into a new pruner of the
+   * same type that contains the information of both, or if not directly combinable, implementors should create a
+   * {@link CompositeSegmentPruner}
+   */
+  SegmentPruner combine(SegmentPruner other);
+
+  /**
+   * Returns a pruner that includes only segments that are accepted by both of the given pruners. Either pruner
+   * may be null, which indicates that it accepts all segments (i.e. does not do any pruning). Returns null if
+   * both provided pruners are null.
+   */
+  @Nullable
+  static SegmentPruner combine(@Nullable SegmentPruner first, @Nullable SegmentPruner second)
+  {
+    if (first == null) {
+      return second;
+    } else if (second == null) {
+      return first;
+    } else {
+      return first.combine(second);
+    }
+  }
 }

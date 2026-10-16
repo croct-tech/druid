@@ -299,7 +299,7 @@ public abstract class ResponseContext
    *        EXTENSION_KEY_2
    *     });
    *   }
-   * }</pre>
+   * }}</pre>
    * Make sure all extension keys are added with the {@link #registerKey(Key)} or
    * {@link #registerKeys(Key[])} methods.
    * <p>
@@ -488,8 +488,8 @@ public abstract class ResponseContext
               TIMEOUT_AT,
               NUM_SCANNED_ROWS,
               CPU_CONSUMED_NANOS,
-              TRUNCATED,
-              }
+              TRUNCATED
+          }
       );
     }
 

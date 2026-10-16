@@ -19,9 +19,11 @@
 
 package org.apache.druid.testing.embedded.indexing;
 
+import com.google.common.collect.ImmutableList;
 import org.apache.druid.data.input.impl.DimensionsSpec;
 import org.apache.druid.data.input.impl.JsonInputFormat;
 import org.apache.druid.data.input.impl.TimestampSpec;
+import org.apache.druid.indexer.TaskStatusPlus;
 import org.apache.druid.indexer.granularity.UniformGranularitySpec;
 import org.apache.druid.indexing.kafka.simulate.KafkaResource;
 import org.apache.druid.indexing.kafka.supervisor.KafkaSupervisorSpecBuilder;
@@ -31,6 +33,7 @@ import org.apache.druid.indexing.kinesis.supervisor.KinesisSupervisorSpec;
 import org.apache.druid.indexing.overlord.supervisor.SupervisorStatus;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.query.DruidMetrics;
+import org.apache.druid.rpc.indexing.OverlordClient;
 import org.apache.druid.segment.indexing.DataSchema;
 import org.apache.druid.testing.embedded.EmbeddedBroker;
 import org.apache.druid.testing.embedded.EmbeddedCoordinator;
@@ -42,13 +45,15 @@ import org.apache.druid.testing.embedded.EmbeddedRouter;
 import org.apache.druid.testing.embedded.StreamIngestResource;
 import org.apache.druid.testing.embedded.junit5.EmbeddedClusterTestBase;
 import org.apache.druid.testing.embedded.kinesis.KinesisResource;
-import org.apache.druid.testing.tools.EventSerializer;
-import org.apache.druid.testing.tools.JsonEventSerializer;
-import org.apache.druid.testing.tools.StreamGenerator;
-import org.apache.druid.testing.tools.WikipediaStreamEventStreamGenerator;
+import org.apache.druid.testing.embedded.tools.EventSerializer;
+import org.apache.druid.testing.embedded.tools.JsonEventSerializer;
+import org.apache.druid.testing.embedded.tools.StreamGenerator;
+import org.apache.druid.testing.embedded.tools.WikipediaStreamEventStreamGenerator;
 import org.joda.time.Period;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -81,6 +86,27 @@ public abstract class StreamIndexTestBase extends EmbeddedClusterTestBase
         .addServer(new EmbeddedRouter());
   }
 
+  /**
+   * Terminates every supervisor and cancels every active task. The cluster is shared across all tests
+   * in the class (see {@link EmbeddedClusterTestBase}), so a task left running by one test would potentially
+   * interfere with the next test.
+   */
+  @AfterEach
+  protected void terminateLeftoverSupervisorsAndTasks()
+  {
+    final List<SupervisorStatus> supervisors = ImmutableList.copyOf(
+        cluster.callApi().onLeaderOverlord(OverlordClient::supervisorStatuses)
+    );
+    for (SupervisorStatus supervisor : supervisors) {
+      cluster.callApi().onLeaderOverlord(o -> o.terminateSupervisor(supervisor.getId()));
+    }
+
+    cluster.callApi()
+           .waitForResult(this::cancelAllTasks, count -> count == 0)
+           .withTimeoutMillis(60_000)
+           .go();
+  }
+
   protected KafkaSupervisorSpecBuilder createKafkaSupervisor(KafkaResource kafkaServer)
   {
     return MoreResources.Supervisor.KAFKA_JSON
@@ -101,7 +127,7 @@ public abstract class StreamIndexTestBase extends EmbeddedClusterTestBase
         null,
         DataSchema.builder()
                   .withDataSource(dataSource)
-                  .withTimestamp(new TimestampSpec("timestamp", null, null))
+                  .withTimestamp(TimestampSpec.DEFAULT)
                   .withGranularity(new UniformGranularitySpec(Granularities.HOUR, null, null))
                   .withDimensions(DimensionsSpec.EMPTY)
                   .build(),
@@ -117,9 +143,11 @@ public abstract class StreamIndexTestBase extends EmbeddedClusterTestBase
             Period.millis(10),
             Period.millis(10),
             true,
-            Period.seconds(5),
+            Period.seconds(60),
             null, null, null, null, null, null, null, null,
-            false
+            false,
+            null,
+            null
         ),
         Map.of(),
         false,
@@ -128,19 +156,43 @@ public abstract class StreamIndexTestBase extends EmbeddedClusterTestBase
   }
 
   /**
-   * Waits until number of processed events matches {@code expectedRowCount}.
+   * Waits until the total row count of successfully published segments matches
+   * {@code expectedRowCount}, using the cluster default emitter timeout.
    */
   protected void waitUntilPublishedRecordsAreIngested(int expectedRowCount)
   {
     indexer.latchableEmitter().waitForEventAggregate(
-        event -> event.hasMetricName("ingest/events/processed")
+        event -> event.hasMetricName("ingest/rows/published")
                       .hasDimension(DruidMetrics.DATASOURCE, dataSource),
         agg -> agg.hasSumAtLeast(expectedRowCount)
     );
 
     final int totalEventsProcessed = indexer
         .latchableEmitter()
-        .getMetricValues("ingest/events/processed", Map.of(DruidMetrics.DATASOURCE, dataSource))
+        .getMetricValues("ingest/rows/published", Map.of(DruidMetrics.DATASOURCE, dataSource))
+        .stream()
+        .mapToInt(Number::intValue)
+        .sum();
+    Assertions.assertEquals(expectedRowCount, totalEventsProcessed);
+  }
+
+  /**
+   * Same as {@link #waitUntilPublishedRecordsAreIngested(int)} but with an explicit timeout in millis.
+   * Use for ingestion paths with a heavier task lifecycle (e.g. bounded supervisor cold start) where the
+   * cluster default may not allow enough headroom on CI.
+   */
+  protected void waitUntilPublishedRecordsAreIngested(int expectedRowCount, Long timeoutMillis)
+  {
+    indexer.latchableEmitter().waitForEventAggregate(
+        event -> event.hasMetricName("ingest/rows/published")
+                      .hasDimension(DruidMetrics.DATASOURCE, dataSource),
+        agg -> agg.hasSumAtLeast(expectedRowCount),
+        timeoutMillis
+    );
+
+    final int totalEventsProcessed = indexer
+        .latchableEmitter()
+        .getMetricValues("ingest/rows/published", Map.of(DruidMetrics.DATASOURCE, dataSource))
         .stream()
         .mapToInt(Number::intValue)
         .sum();
@@ -180,5 +232,22 @@ public abstract class StreamIndexTestBase extends EmbeddedClusterTestBase
       getStreamIngestResource().publishRecordsToTopicWithoutTransaction(topic, records);
     }
     return records.size();
+  }
+
+  /**
+   * Cancels every task that has not completed yet and returns how many such tasks there were.
+   */
+  private int cancelAllTasks()
+  {
+    final List<TaskStatusPlus> tasks = new ArrayList<>();
+    for (String taskState : List.of("running", "pending", "waiting")) {
+      tasks.addAll(cluster.callApi().getTasks(null, taskState));
+    }
+
+    for (TaskStatusPlus task : tasks) {
+      cluster.callApi().onLeaderOverlord(o -> o.cancelTask(task.getId()));
+    }
+
+    return tasks.size();
   }
 }

@@ -19,6 +19,7 @@
 
 package org.apache.druid.msq.test;
 
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -31,6 +32,7 @@ import org.apache.druid.discovery.NodeRole;
 import org.apache.druid.frame.processor.Bouncer;
 import org.apache.druid.guice.IndexingServiceTuningConfigModule;
 import org.apache.druid.guice.JoinableFactoryModule;
+import org.apache.druid.guice.LazySingleton;
 import org.apache.druid.guice.annotations.Self;
 import org.apache.druid.indexing.common.SegmentCacheManagerFactory;
 import org.apache.druid.initialization.DruidModule;
@@ -48,6 +50,7 @@ import org.apache.druid.query.QueryProcessingPool;
 import org.apache.druid.query.groupby.TestGroupByBuffers;
 import org.apache.druid.segment.TestIndex;
 import org.apache.druid.segment.loading.DataSegmentPusher;
+import org.apache.druid.segment.loading.DeepStorageSegmentConfig;
 import org.apache.druid.segment.loading.LocalDataSegmentPusher;
 import org.apache.druid.segment.loading.LocalDataSegmentPusherConfig;
 import org.apache.druid.segment.loading.SegmentCacheManager;
@@ -89,13 +92,15 @@ public class CalciteMSQTestsHelper
     }
 
     @Provides
+    @LazySingleton
     public SegmentCacheManager provideSegmentCacheManager(ObjectMapper testMapper, TempDirProducer tempDirProducer)
     {
-      return new SegmentCacheManagerFactory(TestIndex.INDEX_IO, testMapper)
-          .manufacturate(tempDirProducer.newTempFolder("test"), true);
+      return SegmentCacheManagerFactory.createWithOwnedPool(TestIndex.INDEX_IO, testMapper)
+          .manufacturate(tempDirProducer.newTempFolder("test"), null, true, false);
     }
 
     @Provides
+    @LazySingleton
     public LocalDataSegmentPusherConfig provideLocalDataSegmentPusherConfig(TempDirProducer tempDirProducer)
     {
       LocalDataSegmentPusherConfig config = new LocalDataSegmentPusherConfig();
@@ -104,27 +109,34 @@ public class CalciteMSQTestsHelper
     }
 
     @Provides
+    @LazySingleton
     public TestSegmentManager provideTestSegmentManager()
     {
       return new TestSegmentManager();
     }
 
     @Provides
+    @LazySingleton
     public DataSegmentPusher provideDataSegmentPusher(
         LocalDataSegmentPusherConfig config,
         TestSegmentManager testSegmentManager
     )
     {
-      return new MSQTestDelegateDataSegmentPusher(new LocalDataSegmentPusher(config), testSegmentManager);
+      return new MSQTestDelegateDataSegmentPusher(
+          new LocalDataSegmentPusher(config, new DeepStorageSegmentConfig()),
+          testSegmentManager
+      );
     }
 
     @Provides
+    @LazySingleton
     public DataSegmentAnnouncer provideDataSegmentAnnouncer()
     {
       return new NoopDataSegmentAnnouncer();
     }
 
     @Provides
+    @LazySingleton
     public SegmentManager provideSegmentManager(
         TestSegmentManager testSegmentManager,
         SpecificSegmentsQuerySegmentWalker walker
@@ -142,6 +154,7 @@ public class CalciteMSQTestsHelper
     }
 
     @Provides
+    @LazySingleton
     public DataServerQueryHandlerFactory provideDataServerQueryHandlerFactory()
     {
       return getTestDataServerQueryHandlerFactory();
@@ -173,6 +186,7 @@ public class CalciteMSQTestsHelper
       @Override
       public <RowType, QueryType> ListenableFuture<DataServerQueryResult<RowType>> fetchRowsFromDataServer(
           Query<QueryType> query,
+          JavaType queryResultType,
           Function<Sequence<QueryType>, Sequence<RowType>> mappingFunction,
           Closer closer
       )

@@ -22,6 +22,7 @@ package org.apache.druid.server.compaction;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.druid.client.indexing.ClientCompactionTaskQueryTuningConfig;
 import org.apache.druid.common.config.Configs;
+import org.apache.druid.data.input.impl.BaseTableProjectionSpec;
 import org.apache.druid.data.input.impl.DimensionSchema;
 import org.apache.druid.indexer.partitions.DimensionRangePartitionsSpec;
 import org.apache.druid.indexer.partitions.DynamicPartitionsSpec;
@@ -59,7 +60,7 @@ public class CompactionStatus
 {
   private static final Logger log = new Logger(CompactionStatus.class);
 
-  private static final CompactionStatus COMPLETE = new CompactionStatus(State.COMPLETE, null, null, null);
+  private static final CompactionStatus COMPLETE = new CompactionStatus(State.COMPLETE, null, null, null, null);
   public static final String NEVER_COMPACTED_REASON = "not compacted yet";
 
   public enum State
@@ -88,25 +89,34 @@ public class CompactionStatus
       Evaluator::dimensionsSpecIsUpToDate,
       Evaluator::metricsSpecIsUpToDate,
       Evaluator::transformSpecIsUpToDate,
-      Evaluator::projectionsAreUpToDate
+      Evaluator::projectionsAreUpToDate,
+      Evaluator::baseTableIsUpToDate
   );
 
   private final State state;
   private final String reason;
+
+  @Nullable
   private final CompactionStatistics compactedStats;
+  @Nullable
   private final CompactionStatistics uncompactedStats;
+  @Nullable
+  private final List<DataSegment> uncompactedSegments;
+
 
   private CompactionStatus(
       State state,
       String reason,
-      CompactionStatistics compactedStats,
-      CompactionStatistics uncompactedStats
+      @Nullable CompactionStatistics compactedStats,
+      @Nullable CompactionStatistics uncompactedStats,
+      @Nullable List<DataSegment> uncompactedSegments
   )
   {
     this.state = state;
     this.reason = reason;
     this.compactedStats = compactedStats;
     this.uncompactedStats = uncompactedStats;
+    this.uncompactedSegments = uncompactedSegments;
   }
 
   public boolean isComplete()
@@ -139,6 +149,11 @@ public class CompactionStatus
     return uncompactedStats;
   }
 
+  public List<DataSegment> getUncompactedSegments()
+  {
+    return uncompactedSegments;
+  }
+
   @Override
   public String toString()
   {
@@ -152,12 +167,13 @@ public class CompactionStatus
 
   public static CompactionStatus pending(String reasonFormat, Object... args)
   {
-    return new CompactionStatus(State.PENDING, StringUtils.format(reasonFormat, args), null, null);
+    return new CompactionStatus(State.PENDING, StringUtils.format(reasonFormat, args), null, null, null);
   }
 
   public static CompactionStatus pending(
       CompactionStatistics compactedStats,
       CompactionStatistics uncompactedStats,
+      List<DataSegment> uncompactedSegments,
       String reasonFormat,
       Object... args
   )
@@ -166,8 +182,17 @@ public class CompactionStatus
         State.PENDING,
         StringUtils.format(reasonFormat, args),
         compactedStats,
-        uncompactedStats
+        uncompactedStats,
+        uncompactedSegments
     );
+  }
+
+  public static CompactionStatus complete(
+      CompactionStatistics compactionStatistics,
+      CompactionStatistics uncompactedStats
+  )
+  {
+    return new CompactionStatus(State.COMPLETE, null, compactionStatistics, uncompactedStats, null);
   }
 
   /**
@@ -244,12 +269,12 @@ public class CompactionStatus
 
   public static CompactionStatus skipped(String reasonFormat, Object... args)
   {
-    return new CompactionStatus(State.SKIPPED, StringUtils.format(reasonFormat, args), null, null);
+    return new CompactionStatus(State.SKIPPED, StringUtils.format(reasonFormat, args), null, null, null);
   }
 
   public static CompactionStatus running(String message)
   {
-    return new CompactionStatus(State.RUNNING, message, null, null);
+    return new CompactionStatus(State.RUNNING, message, null, null, null);
   }
 
   /**
@@ -424,11 +449,12 @@ public class CompactionStatus
       }
 
       if (reasonsForCompaction.isEmpty()) {
-        return COMPLETE;
+        return CompactionStatus.complete(createStats(this.compactedSegments), createStats(this.uncompactedSegments));
       } else {
         return CompactionStatus.pending(
             createStats(this.compactedSegments),
-            createStats(uncompactedSegments),
+            createStats(this.uncompactedSegments),
+            this.uncompactedSegments,
             reasonsForCompaction.get(0)
         );
       }
@@ -467,9 +493,9 @@ public class CompactionStatus
         // Cannot evaluate further without a fingerprint mapper
         uncompactedSegments.addAll(
             mismatchedFingerprintToSegmentMap.values()
-                                            .stream()
-                                            .flatMap(List::stream)
-                                            .toList()
+                                             .stream()
+                                             .flatMap(List::stream)
+                                             .toList()
         );
         return CompactionStatus.pending("Segments have a mismatched fingerprint and no fingerprint mapper is available");
       }
@@ -493,7 +519,8 @@ public class CompactionStatus
                 }
                 segments.addAll(e.getValue());
                 return segments;
-              });
+              }
+          );
         }
       }
 
@@ -544,6 +571,11 @@ public class CompactionStatus
       return evaluateForAllCompactionStates(this::projectionsAreUpToDate);
     }
 
+    private CompactionStatus baseTableIsUpToDate()
+    {
+      return evaluateForAllCompactionStates(this::baseTableIsUpToDate);
+    }
+
     private CompactionStatus segmentGranularityIsUpToDate()
     {
       return evaluateForAllCompactionStates(this::segmentGranularityIsUpToDate);
@@ -582,7 +614,8 @@ public class CompactionStatus
       } else if (existingPartionsSpec instanceof DynamicPartitionsSpec) {
         existingPartionsSpec = new DynamicPartitionsSpec(
             existingPartionsSpec.getMaxRowsPerSegment(),
-            ((DynamicPartitionsSpec) existingPartionsSpec).getMaxTotalRowsOr(Long.MAX_VALUE));
+            ((DynamicPartitionsSpec) existingPartionsSpec).getMaxTotalRowsOr(Long.MAX_VALUE)
+        );
       }
       return CompactionStatus.completeIfNullOrEqual(
           "partitionsSpec",
@@ -612,6 +645,18 @@ public class CompactionStatus
       );
     }
 
+    private CompactionStatus baseTableIsUpToDate(CompactionState lastCompactionState)
+    {
+      // The baseTable spec compares its own state; segment/query granularity and rollup are covered by their own
+      // checks, so the spec excludes them. A null configured baseTable means "don't care".
+      final BaseTableProjectionSpec configured = compactionConfig.getBaseTable();
+      final BaseTableProjectionSpec current = lastCompactionState.getBaseTable();
+      if (configured == null || (current != null && configured.hasEqualCompactionState(current))) {
+        return COMPLETE;
+      }
+      return configChanged("baseTable", configured, current, String::valueOf);
+    }
+
     private CompactionStatus inputBytesAreWithinLimit()
     {
       final long inputSegmentSize = compactionConfig.getInputSegmentSizeBytes();
@@ -633,9 +678,18 @@ public class CompactionStatus
       }
 
       final Granularity configuredSegmentGranularity = configuredGranularitySpec.getSegmentGranularity();
-      final UserCompactionTaskGranularityConfig existingGranularitySpec = getGranularitySpec(lastCompactionState);
-      final Granularity existingSegmentGranularity
-          = existingGranularitySpec == null ? null : existingGranularitySpec.getSegmentGranularity();
+      final Granularity existingSegmentGranularity;
+      if (lastCompactionState.getBaseTable() != null) {
+        // baseTable mode: segment granularity is recorded in the SegmentGranularitySpec, not the (null) GranularitySpec.
+        existingSegmentGranularity = lastCompactionState.getSegmentGranularitySpec() == null
+                                     ? null
+                                     : lastCompactionState.getSegmentGranularitySpec().getSegmentGranularity();
+      } else {
+        final UserCompactionTaskGranularityConfig existingGranularitySpec = getGranularitySpec(lastCompactionState);
+        existingSegmentGranularity = existingGranularitySpec == null
+                                     ? null
+                                     : existingGranularitySpec.getSegmentGranularity();
+      }
 
       if (configuredSegmentGranularity.equals(existingSegmentGranularity)) {
         return COMPLETE;
@@ -666,6 +720,9 @@ public class CompactionStatus
 
     private CompactionStatus rollupIsUpToDate(CompactionState lastCompactionState)
     {
+      if (lastCompactionState.getBaseTable() != null) {
+        return COMPLETE;
+      }
       if (configuredGranularitySpec == null) {
         return COMPLETE;
       } else {
@@ -684,16 +741,23 @@ public class CompactionStatus
     {
       if (configuredGranularitySpec == null) {
         return COMPLETE;
+      }
+      final Granularity existingQueryGranularity;
+      if (lastCompactionState.getBaseTable() != null) {
+        // baseTable mode: query granularity is owned by the baseTable spec's virtual column, not the (null)
+        // GranularitySpec.
+        existingQueryGranularity = lastCompactionState.getBaseTable().getQueryGranularity();
       } else {
         final UserCompactionTaskGranularityConfig existingGranularitySpec
             = getGranularitySpec(lastCompactionState);
-        return CompactionStatus.completeIfNullOrEqual(
-            "queryGranularity",
-            configuredGranularitySpec.getQueryGranularity(),
-            existingGranularitySpec == null ? null : existingGranularitySpec.getQueryGranularity(),
-            CompactionStatus::asString
-        );
+        existingQueryGranularity = existingGranularitySpec == null ? null : existingGranularitySpec.getQueryGranularity();
       }
+      return CompactionStatus.completeIfNullOrEqual(
+          "queryGranularity",
+          configuredGranularitySpec.getQueryGranularity(),
+          existingQueryGranularity,
+          CompactionStatus::asString
+      );
     }
 
     /**
@@ -810,7 +874,13 @@ public class CompactionStatus
       final Set<Interval> segmentIntervals =
           segments.stream().map(DataSegment::getInterval).collect(Collectors.toSet());
       final long totalBytes = segments.stream().mapToLong(DataSegment::getSize).sum();
-      return CompactionStatistics.create(totalBytes, segments.size(), segmentIntervals.size());
+      final Long totalRows;
+      if (segments.stream().allMatch(s -> s.getTotalRows() != null)) {
+        totalRows = segments.stream().mapToLong(DataSegment::getTotalRows).sum();
+      } else {
+        totalRows = null;
+      }
+      return CompactionStatistics.create(totalBytes, totalRows, segments.size(), segmentIntervals.size());
     }
   }
 }

@@ -102,8 +102,21 @@ FROM test_json_cols
 UNION ALL
 SELECT parse_json('{"a": "A", "b": 123, "c": true, "d": null}') c
 FROM test_json_cols;
-Query could not be planned
-!error
++-------------------------------------+
+| c                                   |
++-------------------------------------+
+| {"a":"A","b":123,"c":true,"d":null} |
+| {"a":"A","b":123,"c":true,"d":null} |
+| {"a":"A","b":123,"c":true,"d":null} |
+| {"a":"A","b":123,"c":true,"d":null} |
+| {"a":"A","b":123,"c":true,"d":null} |
+| {"a":"A","b":123,"c":true,"d":null} |
+| {"a":"A","b":123,"c":true,"d":null} |
+| {"a":"A","b":123,"c":true,"d":null} |
++-------------------------------------+
+(8 rows)
+
+!ok
 
 #-------------------------------------------------------------------------
 # TESTCASE: test_func_try_parse_json TEST_ID: A058
@@ -129,8 +142,7 @@ FROM test_json_cols;
     "id" : "<taskId>_0",
     "input" : [ {
       "type" : "table",
-      "dataSource" : "test_json_cols",
-      "intervals" : [ "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z" ]
+      "dataSource" : "test_json_cols"
     } ],
     "processor" : {
       "type" : "scan",
@@ -153,7 +165,6 @@ FROM test_json_cols;
         "resultFormat" : "compactedList",
         "columns" : [ "v0" ],
         "context" : {
-          "__user" : null,
           "finalize" : true,
           "maxParseExceptions" : 0,
           "rowBasedFrameType" : 19,

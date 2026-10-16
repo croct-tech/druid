@@ -102,6 +102,17 @@ public class CapabilitiesBasedFormat implements ColumnFormat
       return this;
     }
 
+    if (otherFormat instanceof StringDictionaryEncodedColumnFormat) {
+      if (!this.capabilities.is(ValueType.STRING)) {
+        throw new ISE(
+            "Cannot merge columns of type[%s] and [%s]",
+            this.capabilities.asTypeString(),
+            otherFormat.getLogicalType()
+        );
+      }
+      return otherFormat.merge(this);
+    }
+
     ColumnCapabilitiesImpl merged = ColumnCapabilitiesImpl.copyOf(this.toColumnCapabilities());
     ColumnCapabilitiesImpl otherSnapshot = ColumnCapabilitiesImpl.copyOf(otherFormat.toColumnCapabilities());
     final String mergedType = merged.getType() == null ? null : merged.asTypeString();
@@ -155,5 +166,24 @@ public class CapabilitiesBasedFormat implements ColumnFormat
   public ColumnCapabilities toColumnCapabilities()
   {
     return capabilities;
+  }
+
+  @Override
+  public boolean equals(Object o)
+  {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    final CapabilitiesBasedFormat that = (CapabilitiesBasedFormat) o;
+    return Objects.equals(capabilities, that.capabilities);
+  }
+
+  @Override
+  public int hashCode()
+  {
+    return Objects.hashCode(capabilities);
   }
 }

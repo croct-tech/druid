@@ -25,7 +25,7 @@ sidebar_label: Reference
 
 ## SQL reference
 
-This topic is a reference guide for the multi-stage query architecture in Apache Druid. For examples of real-world
+This topic is a reference guide for the multi-stage query architecture in Apache&circledR; Druid. For examples of real-world
 usage, refer to the [Examples](examples.md) page.
 
 `INSERT` and `REPLACE` load data into a Druid datasource from either an external input source, or from another
@@ -138,7 +138,7 @@ Pass all arguments for `s3()` as named parameters with their values enclosed in 
 ```sql
 INSERT INTO
   EXTERN(
-    s3(bucket => 'your_bucket', prefix => 'prefix/to/files')
+    s3(bucket => 'your_bucket', prefix => 'prefix/to/files', assumeRoleArn => 'arn:aws:iam::some-role')
   )
 AS CSV
 SELECT
@@ -152,6 +152,8 @@ Supported arguments for the function:
 |---|---|---|---|
 | `bucket` | Yes  | S3 bucket destination for exported files. You must add the bucket and prefix combination to the `druid.export.storage.s3.allowedExportPaths` allow list. | n/a |
 | `prefix` | Yes  | Destination path in the bucket to create exported files. The export query expects the destination path to be empty. If the location includes other files, the query will fail. You must add the bucket and prefix combination to the `druid.export.storage.s3.allowedExportPaths` allow list. | n/a |
+| `assumeRoleArn` | No | ARN of the role to assume before exporting data. If not provided, the default credentials configured for the Druid process are used. | n/a |
+| `assumeRoleExternalId` | No | External ID to use when assuming the role specified in assumeRoleArn. This provides an additional layer of security for role assumption. Only used when assumeRoleArn is set. | n/a |
 
 Configure the following runtime parameters to export to an S3 destination:
 
@@ -415,6 +417,7 @@ The following table lists the context parameters for the MSQ task engine:
 | `includeAllCounters` | SELECT, INSERT or REPLACE<br /><br />Whether to include counters that were added in Druid 31 or later. This is a backwards compatibility option that must be set to `false` during a rolling update from versions prior to Druid 31. | `true` |
 | `maxFrameSize` | SELECT, INSERT or REPLACE<br /><br />Size of frames used for data transfer within the MSQ engine. You generally do not need to change this unless you have very large rows. | `1000000` (1 MB) |
 | `maxInputFilesPerWorker` | SELECT, INSERT, REPLACE<br /><br />Maximum number of input files or segments per worker. If a single worker would need to read more than this number of files, the query fails with a `TooManyInputFiles` error. In this case, you should either increase this limit if your tasks have enough memory to handle more files, add more workers by increasing `maxNumTasks`, or split your query into smaller queries that process fewer files. | 10,000 |
+| `backgroundFetchExternalFiles` | SELECT, INSERT, REPLACE<br /><br />Controls how workers read cloud storage files (e.g. `s3`, `gs`, `azure`) referenced by [`EXTERN`](#extern-function). When `true` (the default), each worker fetches its input files asynchronously when possible before reading them. This overlaps downloading with processing, which generally improves throughput when reading larger numbers of files. Otherwise, workers stream each file directly from cloud storage while processing it.<br /><br />This setting has no effect for input sources that use `prefix`, or input sources that request [system fields](../ingestion/input-sources.md). | `true` |
 | `maxPartitions` | SELECT, INSERT, REPLACE<br /><br />Maximum number of output partitions for any single stage. For INSERT or REPLACE queries, this controls the maximum number of segments that can be generated. If the query would exceed this limit, it fails with a `TooManyPartitions` error. You can increase this limit if needed, break your query into smaller queries, or use a larger target segment size (via `rowsPerSegment`). | 25,000 |
 | `maxThreads` | SELECT, INSERT or REPLACE<br /><br />Maximum number of threads to use for processing. This only has an effect if it is greater than zero and less than the default thread count based on system configuration. Otherwise, it is ignored, and workers use the default thread count. | Not set (use default thread count) |
 
@@ -525,7 +528,7 @@ SQL-based ingestion supports using durable storage to store intermediate files t
 
 ### Durable storage configurations
 
-Durable storage is supported on Amazon S3 storage, Microsoft's Azure Blob Storage and Google Cloud Storage. 
+Durable storage is supported on Amazon S3 storage, Microsoft&circledR; Azure Blob Storage and Google Cloud Storage. 
 There are common configurations that control the behavior regardless of which storage service you use. Apart from these common configurations, there are a few properties specific to S3 and to Azure.
 
 Common properties to configure the behavior of durable storage
@@ -582,6 +585,7 @@ The following table lists query limits:
 | Number of workers for any one stage. | Hard limit is 1,000. Memory-dependent soft limit may be lower. | `TooManyWorkers`|
 | Maximum memory occupied by broadcasted tables. | 30% of each [processor memory bundle](concepts.md#memory-usage). | `BroadcastTablesTooLarge` |
 | Maximum memory occupied by buffered data during sort-merge join. Only relevant when `sqlJoinAlgorithm` is `sortMerge`. | 10 MB | `TooManyRowsWithSameKey` |
+| Number of rows materialized in a single window partition. Configurable with `maxRowsMaterializedInWindow`. | 100,000 | `TooManyRowsInAWindow` |
 | Maximum relaunch attempts per worker. Initial run is not a relaunch. The worker will be spawned 1 + `workerRelaunchLimit` times before the job fails. | 2 | `TooManyAttemptsForWorker` |
 | Maximum relaunch attempts for a job across all workers. | 100 | `TooManyAttemptsForJob` |
 <a name="errors"></a>
@@ -597,6 +601,8 @@ The following table describes error codes you may encounter in the `multiStageQu
 | `CannotParseExternalData`| A worker task could not parse data from an external datasource. | `errorMessage`: More details on why parsing failed. |
 | `ColumnNameRestricted`| The query uses a restricted column name. | `columnName`: The restricted column name. |
 | `ColumnTypeNotSupported` | The column type is not supported. This can be because:<br /> <br /><ul><li>Support for writing or reading from a particular column type is not supported.</li><li>The query attempted to use a column type that is not supported by the frame format. This occurs with ARRAY types, which are not yet implemented for frames.</li></ul> | `columnName`: The column name with an unsupported type.<br /> <br />`columnType`: The unknown column type. |
+| `DruidException` | An error occurred with structured information such as code, persona, and category. It does not fall into one of the other categories. | `druidErrorCode`: More specific error code.<br /><br />`persona`: Target persona.<br /><br />`category`: Error category.<br /><br />`context`: Additional context. |
+| `DurableStorageConfiguration` | Durable storage mode was enabled but is not configured correctly. Check the documentation on how to enable durable storage mode. | `message`: Details on the configuration error. |
 |`InsertCannotAllocateSegment`| The controller task could not allocate a new segment ID due to conflict with existing segments or pending segments. Common reasons for such conflicts:<br /> <br /><ul><li>Attempting to mix different granularities in the same intervals of the same datasource.</li><li>Prior ingestions that used non-extendable shard specs.</li></ul> <br /> <br /> Use REPLACE to overwrite the existing data or if the error contains the `allocatedInterval` then alternatively rerun the INSERT job with the mentioned granularity to append to existing data. Note that it might not always be possible to append to the existing data using INSERT and can only be done if `allocatedInterval` is present. | `dataSource`<br /> <br />`interval`: The interval for the attempted new segment allocation. <br /> <br /> `allocatedInterval`: The incorrect interval allocated by the overlord. It can be null |
 |`InsertCannotBeEmpty`| An INSERT or REPLACE query did not generate any output rows when `failOnEmptyInsert` query context is set to true. `failOnEmptyInsert` defaults to false, so an INSERT query generating no output rows will be no-op, and a REPLACE query generating no output rows will delete all data that matches the OVERWRITE clause. | `dataSource` |
 | `InsertLockPreempted` | An INSERT or REPLACE query was canceled by a higher-priority ingestion job, such as a real-time ingestion task. | |
@@ -605,7 +611,6 @@ The following table describes error codes you may encounter in the `multiStageQu
 | `InvalidField`| An error was encountered while writing a field. | `error`: Encountered error. <br /><br /> `source`: Source for the error. <br /><br /> `rowNumber`: Row number (1-indexed) for the error. <br /><br /> `column`: Column for the error. |
 | `InvalidNullByte`| A string column included a null byte. Null bytes in strings are not permitted. |`source`: The source that included the null byte <br /><br /> `rowNumber`: The row number (1-indexed) that included the null byte <br /><br /> `column`: The column that included the null byte <br /><br /> `value`: Actual string containing the null byte <br /><br /> `position`: Position (1-indexed) of occurrence of null byte|
 | `QueryNotSupported`| QueryKit could not translate the provided native query to a multi-stage query.<br /> <br />This can happen if the query uses features that aren't supported, like GROUPING SETS. | |
-| `QueryRuntimeError` | MSQ uses the native query engine to run the leaf stages. This error tells MSQ that error is in native query runtime.<br /> <br /> Since this is a generic error, the user needs to look at logs for the error message and stack trace to figure out the next course of action. If the user is stuck, consider raising a `github` issue for assistance. |  `baseErrorMessage` error message from the native query runtime. |
 | `RowTooLarge`| The query tried to process a row that was too large to write to a single frame. See the [Limits](#limits) table for specific limits on frame size. Note that the effective maximum row size is smaller than the maximum frame size due to alignment considerations during frame writing. | `maxFrameSize`: The limit on the frame size. |
 | `TaskStartTimeout` | Unable to launch `pendingTasks` worker out of total `totalTasks` workers tasks within `timeout` seconds of the last successful worker launch.<br /><br />There may be insufficient available slots to start all the worker tasks simultaneously. Try splitting up your query into smaller chunks using a smaller value of [`maxNumTasks`](#context-parameters). Another option is to increase capacity. | `pendingTasks`: Number of tasks not yet started.<br /><br />`totalTasks`: The number of tasks attempted to launch.<br /><br />`timeout`: Timeout, in milliseconds, that was exceeded. |
 | `TooManyAttemptsForJob` | Total relaunch attempt count across all workers exceeded max relaunch attempt limit. See the [Limits](#limits) table for the specific limit. | `maxRelaunchCount`: Max number of relaunches across all the workers defined in the [Limits](#limits) section. <br /><br /> `currentRelaunchCount`: current relaunch counter for the job across all workers. <br /><br /> `taskId`: Latest task id which failed <br /> <br /> `rootErrorMessage`: Error message of the latest failed task.|
@@ -615,6 +620,8 @@ The following table describes error codes you may encounter in the `multiStageQu
 | `TooManyPartitions`| Exceeded the maximum number of partitions for a stage (25,000 partitions).<br /><br />This can occur with INSERT or REPLACE statements that generate large numbers of segments, since each segment is associated with a partition. If you encounter this limit, consider breaking up your INSERT or REPLACE statement into smaller statements that process less data per statement. | `maxPartitions`: The limit on partitions which was exceeded |
 | `TooManyClusteredByColumns` | Exceeded the maximum number of clustering columns for a stage (1,500 columns).<br /><br />This can occur with `CLUSTERED BY`, `ORDER BY`, or `GROUP BY` with a large number of columns. | `numColumns`: The number of columns requested.<br /><br />`maxColumns`: The limit on columns which was exceeded.`stage`: The stage number exceeding the limit<br /><br /> |
 | `TooManyRowsWithSameKey` | The number of rows for a given key exceeded the maximum number of buffered bytes on both sides of a join. See the [Limits](#limits) table for the specific limit. Only occurs when join is executed via the sort-merge join algorithm. | `key`: The key that had a large number of rows.<br /><br />`numBytes`: Number of bytes buffered, which may include other keys.<br /><br />`maxBytes`: Maximum number of bytes buffered. |
+| `TooManyRowsInAWindow` | Too many rows materialized in a single window partition. Try using a window with a higher cardinality `PARTITION BY` column, changing the query shape, or increasing the limit with the `maxRowsMaterializedInWindow` query context parameter. | `numRows`: Number of rows encountered.<br /><br />`maxRows`: Maximum number of rows allowed. |
+| `TooManySegmentsInTimeChunk` | Too many segments requested to be generated in a single time chunk. Try breaking up the query or increase the limit using the `maxNumSegments` query context parameter. | `timeChunk`: The time chunk that exceeded the limit.<br /><br />`numSegments`: Number of segments requested.<br /><br />`maxNumSegments`: Maximum number of segments allowed.<br /><br />`segmentGranularity`: The segment granularity. |
 | `TooManyColumns` | Exceeded the maximum number of columns for a stage (2,000 columns). | `numColumns`: The number of columns requested.<br /><br />`maxColumns`: The limit on columns which was exceeded. |
 | `TooManyWarnings` | Exceeded the maximum allowed number of warnings of a particular type. | `rootErrorCode`: The error code corresponding to the exception that exceeded the required limit. <br /><br />`maxWarnings`: Maximum number of warnings that are allowed for the corresponding `rootErrorCode`. |
 | `TooManyWorkers`| Exceeded the maximum number of simultaneously-running workers. See the [Limits](#limits) table for more details. | `workers`: The number of simultaneously running workers that exceeded a hard or soft limit. This may be larger than the number of workers in any one stage if multiple stages are running simultaneously. <br /><br />`maxWorkers`: The hard or soft limit on workers that was exceeded. If this is lower than the hard limit (1,000 workers), then you can increase the limit by adding more memory to each task. |

@@ -23,8 +23,11 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.segment.column.ColumnCapabilities;
+import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.segment.column.ValueType;
 
 import javax.annotation.Nullable;
+import java.util.Objects;
 
 /**
  */
@@ -32,20 +35,12 @@ public class ComplexColumnPartSerde implements ColumnPartSerde
 {
   private final String typeName;
   @Nullable
-  private final ComplexMetricSerde serde;
-  @Nullable
   private final Serializer serializer;
   private static final Logger log = new Logger(ComplexColumnPartSerde.class);
 
   private ComplexColumnPartSerde(String typeName, @Nullable Serializer serializer)
   {
     this.typeName = typeName;
-    this.serde = ComplexMetrics.getSerdeForType(typeName);
-    if (this.serde == null) {
-      // Not choosing to fail here since this gets handled as
-      // an UnknownTypeComplexColumn. See SimpleColumnHolder#getColumn.
-      log.warn("Unknown complex column of type %s detected", typeName);
-    }
     this.serializer = serializer;
   }
 
@@ -69,6 +64,12 @@ public class ComplexColumnPartSerde implements ColumnPartSerde
   }
 
   @Override
+  public ColumnType getColumnType()
+  {
+    return new ColumnType(ValueType.COMPLEX, typeName, null);
+  }
+
+  @Override
   public Serializer getSerializer()
   {
     return serializer;
@@ -85,8 +86,14 @@ public class ComplexColumnPartSerde implements ColumnPartSerde
       builder.setHasNulls(ColumnCapabilities.Capable.TRUE);
       builder.setComplexTypeName(typeName);
 
+      // looked up here, not in the constructor, because equal instances are shared; see ColumnPartSerde
+      final ComplexMetricSerde serde = ComplexMetrics.getSerdeForType(typeName);
       if (serde != null) {
         serde.deserializeColumn(buffer, builder, columnConfig);
+      } else {
+        // Not choosing to fail here since this gets handled as
+        // an UnknownTypeComplexColumn. See SimpleColumnHolder#getColumn.
+        log.warn("Unknown complex column of type %s detected", typeName);
       }
     };
   }
@@ -114,5 +121,24 @@ public class ComplexColumnPartSerde implements ColumnPartSerde
     {
       return new ComplexColumnPartSerde(typeName, delegate);
     }
+  }
+
+  @Override
+  public boolean equals(Object o)
+  {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    final ComplexColumnPartSerde that = (ComplexColumnPartSerde) o;
+    return Objects.equals(typeName, that.typeName);
+  }
+
+  @Override
+  public int hashCode()
+  {
+    return Objects.hashCode(typeName);
   }
 }

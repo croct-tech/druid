@@ -27,6 +27,8 @@ import com.google.common.io.CountingOutputStream;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.inject.Inject;
 import com.sun.jersey.api.core.HttpContext;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import jakarta.validation.constraints.NotNull;
 import org.apache.druid.client.indexing.TaskPayloadResponse;
 import org.apache.druid.client.indexing.TaskStatusResponse;
 import org.apache.druid.common.guava.FutureUtils;
@@ -69,8 +71,8 @@ import org.apache.druid.msq.sql.entity.ResultSetInformation;
 import org.apache.druid.msq.sql.entity.SqlStatementResult;
 import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.msq.util.SqlStatementResourceHelper;
-import org.apache.druid.query.DefaultQueryConfig;
 import org.apache.druid.query.ExecutionMode;
+import org.apache.druid.query.QueryConfigProvider;
 import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryContexts;
 import org.apache.druid.query.QueryException;
@@ -98,10 +100,8 @@ import org.apache.druid.sql.http.SqlResource;
 import org.apache.druid.storage.NilStorageConnector;
 import org.apache.druid.storage.StorageConnector;
 import org.apache.druid.storage.StorageConnectorProvider;
-import org.jboss.netty.handler.codec.http.HttpResponseStatus;
 
 import javax.servlet.http.HttpServletRequest;
-import javax.validation.constraints.NotNull;
 import javax.ws.rs.DELETE;
 import javax.ws.rs.GET;
 import javax.ws.rs.POST;
@@ -122,7 +122,6 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-
 @Path("/druid/v2/sql/statements/")
 public class SqlStatementResource
 {
@@ -136,7 +135,7 @@ public class SqlStatementResource
   private final OverlordClient overlordClient;
   private final StorageConnector storageConnector;
   private final AuthorizerMapper authorizerMapper;
-  private final DefaultQueryConfig defaultQueryConfig;
+  private final QueryConfigProvider queryConfigProvider;
   private final ServerConfig serverConfig;
   private final WireTransferableContext wireTransferableContext;
 
@@ -147,7 +146,7 @@ public class SqlStatementResource
       final OverlordClient overlordClient,
       final @MultiStageQuery StorageConnectorProvider storageConnectorProvider,
       final AuthorizerMapper authorizerMapper,
-      final DefaultQueryConfig defaultQueryConfig,
+      final QueryConfigProvider queryConfigProvider,
       final ServerConfig serverConfig,
       final WireTransferableContext wireTransferableContext
   )
@@ -157,7 +156,7 @@ public class SqlStatementResource
     this.overlordClient = overlordClient;
     this.storageConnector = storageConnectorProvider.createStorageConnector(null);
     this.authorizerMapper = authorizerMapper;
-    this.defaultQueryConfig = defaultQueryConfig;
+    this.queryConfigProvider = queryConfigProvider;
     this.serverConfig = serverConfig;
     this.wireTransferableContext = wireTransferableContext;
   }
@@ -202,7 +201,7 @@ public class SqlStatementResource
           sqlQuery,
           req,
           ImmutableMap.<String, Object>builder()
-                      .putAll(defaultQueryConfig.getContext())
+                      .putAll(queryConfigProvider.getContext())
                       .put(RESULT_FORMAT, sqlQuery.getResultFormat())
                       .build()
       );
@@ -988,7 +987,7 @@ public class SqlStatementResource
   private void checkForDurableStorageConnectorImpl()
   {
     if (storageConnector instanceof NilStorageConnector) {
-      throw DruidException.forPersona(DruidException.Persona.USER)
+      throw DruidException.forPersona(DruidException.Persona.OPERATOR)
                           .ofCategory(DruidException.Category.INVALID_INPUT)
                           .build(
                               StringUtils.format(

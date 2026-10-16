@@ -29,6 +29,7 @@ import org.apache.druid.common.utils.IdUtils;
 import org.apache.druid.data.input.kafka.KafkaRecordEntity;
 import org.apache.druid.data.input.kafka.KafkaTopicPartition;
 import org.apache.druid.error.DruidException;
+import org.apache.druid.error.InvalidInput;
 import org.apache.druid.indexing.common.task.Task;
 import org.apache.druid.indexing.common.task.TaskResource;
 import org.apache.druid.indexing.kafka.KafkaDataSourceMetadata;
@@ -54,12 +55,14 @@ import org.apache.druid.indexing.seekablestream.common.OrderedSequenceNumber;
 import org.apache.druid.indexing.seekablestream.common.RecordSupplier;
 import org.apache.druid.indexing.seekablestream.common.StreamException;
 import org.apache.druid.indexing.seekablestream.common.StreamPartition;
+import org.apache.druid.indexing.seekablestream.supervisor.OffsetSnapshot;
 import org.apache.druid.indexing.seekablestream.supervisor.SeekableStreamSupervisor;
 import org.apache.druid.indexing.seekablestream.supervisor.SeekableStreamSupervisorIOConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.SeekableStreamSupervisorReportPayload;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.emitter.EmittingLogger;
 import org.apache.druid.segment.incremental.RowIngestionMetersFactory;
+import org.apache.druid.utils.CollectionUtils;
 import org.joda.time.DateTime;
 
 import javax.annotation.Nullable;
@@ -70,9 +73,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -94,10 +98,18 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
   private static final Long END_OF_PARTITION = Long.MAX_VALUE;
 
   private final Pattern pattern;
-  private volatile Map<KafkaTopicPartition, Long> latestSequenceFromStream;
+
+  /// Position of each selected partition ID in the sorted `partitionIds`, e.g. `[0, 3, 6]` gives `{0=0, 3=1, 6=2}`.
+  /// Used to spread selected partitions evenly across task groups (`rank % taskCount`), where
+  /// `partition % taskCount` could put them all in one group. Empty when no selection is configured.
+  private final Map<Integer, Integer> selectedPartitionRanks;
+
   private volatile Map<KafkaTopicPartition, Long> partitionToTimeLag;
 
   private final KafkaSupervisorSpec spec;
+
+  private final AtomicReference<OffsetSnapshot<KafkaTopicPartition, Long>> offsetSnapshotRef = new AtomicReference<>(
+      OffsetSnapshot.of(Map.of(), Map.of()));
 
   public KafkaSupervisor(
       final TaskStorage taskStorage,
@@ -123,28 +135,88 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
 
     this.spec = spec;
     this.pattern = getIoConfig().isMultiTopic() ? Pattern.compile(getIoConfig().getStream()) : null;
+    final Set<Integer> selected = getIoConfig().getPartitionIds();
+    if (selected == null) {
+      this.selectedPartitionRanks = Map.of();
+    } else {
+      final List<Integer> sorted = new ArrayList<>(selected);
+      Collections.sort(sorted);
+      final Map<Integer, Integer> ranks = new HashMap<>();
+      for (int i = 0; i < sorted.size(); i++) {
+        ranks.put(sorted.get(i), i);
+      }
+      this.selectedPartitionRanks = Map.copyOf(ranks);
+    }
   }
-
 
   @Override
   protected RecordSupplier<KafkaTopicPartition, Long, KafkaRecordEntity> setupRecordSupplier()
   {
+    final KafkaSupervisorIOConfig ioConfig = spec.getSpec().getIOConfig();
     return new KafkaRecordSupplier(
-        spec.getIoConfig().getConsumerProperties(),
+        ioConfig.getConsumerProperties(),
         sortingMapper,
-        spec.getIoConfig().getConfigOverrides(),
-        spec.getIoConfig().isMultiTopic()
+        ioConfig.getConfigOverrides(),
+        ioConfig.isMultiTopic(),
+        null,
+        ioConfig.getHeaderBasedFilterConfig(),
+        ioConfig.getPartitionIds()
     );
   }
 
   @Override
   protected int getTaskGroupIdForPartition(KafkaTopicPartition partitionId)
   {
-    Integer taskCount = spec.getIoConfig().getTaskCount();
+    final int taskCount = spec.getIoConfig().getTaskCount();
     if (partitionId.isMultiTopicPartition()) {
       return Math.abs(31 * partitionId.topic().hashCode() + partitionId.partition()) % taskCount;
     } else {
+      final Integer rank = selectedPartitionRanks.get(partitionId.partition());
+      if (rank != null) {
+        return rank % taskCount;
+      }
+      // An adopted task can still refer to a partition excluded by this supervisor.
       return partitionId.partition() % taskCount;
+    }
+  }
+
+  @Override
+  protected boolean isTaskPartitionSetCurrent(int taskGroupId, Set<KafkaTopicPartition> taskPartitions)
+  {
+    // Removing a selection is handled by the spec-update restart, which requests existing readers to publish.
+    // All-partition supervisors must still adopt readers that predate ordinary topic partition growth.
+    return selectedPartitionRanks.isEmpty() || taskPartitions.equals(partitionGroups.get(taskGroupId));
+  }
+
+  /**
+   * With {@code partitionIds} set, rejects resets naming a different topic or any partition outside the selection.
+   * A full reset (null metadata) is always allowed.
+   */
+  @Override
+  protected void validatePartitionReset(@Nullable DataSourceMetadata metadata)
+  {
+    final Set<Integer> selected = getIoConfig().getPartitionIds();
+    if (selected == null || metadata == null) {
+      return;
+    }
+
+    if (!(metadata instanceof KafkaDataSourceMetadata kafkaMetadata)) {
+      throw InvalidInput.exception("Partition reset requires Kafka metadata for supervisor [%s]", spec.getId());
+    }
+
+    final SeekableStreamSequenceNumbers<KafkaTopicPartition, Long> sequences = kafkaMetadata.getSeekableStreamSequenceNumbers();
+    if (sequences == null || !getIoConfig().getStream().equals(sequences.getStream())) {
+      throw InvalidInput.exception("Partition reset must specify offsets for topic [%s]", getIoConfig().getStream());
+    }
+
+    final Set<KafkaTopicPartition> excluded = sequences.getPartitionSequenceNumberMap().keySet().stream()
+                                                     .filter(p -> p.isMultiTopicPartition() || !selected.contains(p.partition()))
+                                                     .collect(Collectors.toSet());
+    if (!excluded.isEmpty()) {
+      throw InvalidInput.exception(
+          "Cannot reset excluded or topic-qualified partitions [%s] for supervisor [%s] with partition IDs [%s]",
+          excluded, spec.getId(), selected
+      );
     }
   }
 
@@ -172,7 +244,8 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
   )
   {
     KafkaSupervisorIOConfig ioConfig = spec.getIoConfig();
-    Map<KafkaTopicPartition, Long> partitionLag = getRecordLagPerPartitionInLatestSequences(getHighestCurrentOffsets());
+    OffsetSnapshot<KafkaTopicPartition, Long> offsetSnapshot = offsetSnapshotRef.get();
+    Map<KafkaTopicPartition, Long> partitionLag = getRecordLagPerPartitionInLatestSequences(offsetSnapshot);
     return new KafkaSupervisorReportPayload(
         spec.getId(),
         spec.getDataSchema().getDataSource(),
@@ -180,7 +253,7 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
         numPartitions,
         ioConfig.getReplicas(),
         ioConfig.getTaskDuration().getMillis() / 1000,
-        includeOffsets ? latestSequenceFromStream : null,
+        includeOffsets ? offsetSnapshot.getLatestOffsetsFromStream() : null,
         includeOffsets ? partitionLag : null,
         includeOffsets ? getPartitionTimeLag() : null,
         includeOffsets ? aggregatePartitionLags(partitionLag).getTotalLag() : null,
@@ -222,7 +295,9 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
         ioConfig.getInputFormat(),
         kafkaIoConfig.getConfigOverrides(),
         kafkaIoConfig.isMultiTopic(),
-        ioConfig.getTaskDuration().getStandardMinutes()
+        ioConfig.getTaskDuration().getStandardMinutes(),
+        kafkaIoConfig.getBoundedStreamConfig(),  // Pass through bounded config
+        kafkaIoConfig.getHeaderBasedFilterConfig()
     );
   }
 
@@ -234,7 +309,8 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
       TreeMap<Integer, Map<KafkaTopicPartition, Long>> sequenceOffsets,
       SeekableStreamIndexTaskIOConfig taskIoConfig,
       SeekableStreamIndexTaskTuningConfig taskTuningConfig,
-      RowIngestionMetersFactory rowIngestionMetersFactory
+      RowIngestionMetersFactory rowIngestionMetersFactory,
+      @Nullable List<Integer> serverPrioritiesToAssign
   ) throws JsonProcessingException
   {
     final String checkpoints = sortingMapper.writerFor(CHECKPOINTS_TYPE_REF).writeValueAsString(sequenceOffsets);
@@ -252,23 +328,39 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
           (KafkaIndexTaskTuningConfig) taskTuningConfig,
           (KafkaIndexTaskIOConfig) taskIoConfig,
           context,
-          sortingMapper
+          sortingMapper,
+          CollectionUtils.isNullOrEmpty(serverPrioritiesToAssign) ? null : serverPrioritiesToAssign.get(i)
       ));
     }
     return taskList;
   }
 
+  /** Keeps offsets for the configured partitions only. */
+  @Override
+  protected Map<KafkaTopicPartition, Long> getHighestCurrentOffsets()
+  {
+    final Set<Integer> selected = getIoConfig().getPartitionIds();
+    if (selected == null) {
+      return super.getHighestCurrentOffsets();
+    }
+    final Map<KafkaTopicPartition, Long> offsets = new HashMap<>(super.getHighestCurrentOffsets());
+    offsets.keySet().removeIf(partition -> !selected.contains(partition.partition()));
+    return offsets;
+  }
+
   @Override
   protected Map<KafkaTopicPartition, Long> getPartitionRecordLag()
   {
-    Map<KafkaTopicPartition, Long> highestCurrentOffsets = getHighestCurrentOffsets();
+    OffsetSnapshot<KafkaTopicPartition, Long> offsetSnapshot = offsetSnapshotRef.get();
+    Map<KafkaTopicPartition, Long> latestSequencesFromStream = offsetSnapshot.getLatestOffsetsFromStream();
+    Map<KafkaTopicPartition, Long> highestIngestedOffsets = offsetSnapshot.getHighestIngestedOffsets();
 
-    if (latestSequenceFromStream == null) {
+    if (latestSequencesFromStream.isEmpty()) {
       return null;
     }
 
-    Set<KafkaTopicPartition> kafkaPartitions = latestSequenceFromStream.keySet();
-    Set<KafkaTopicPartition> taskPartitions = highestCurrentOffsets.keySet();
+    Set<KafkaTopicPartition> kafkaPartitions = latestSequencesFromStream.keySet();
+    Set<KafkaTopicPartition> taskPartitions = highestIngestedOffsets.keySet();
     if (!kafkaPartitions.equals(taskPartitions)) {
       try {
         log.warn("Mismatched kafka and task partitions: Missing Task Partitions %s, Missing Kafka Partitions %s",
@@ -281,7 +373,7 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
       }
     }
 
-    return getRecordLagPerPartitionInLatestSequences(highestCurrentOffsets);
+    return getRecordLagPerPartitionInLatestSequences(offsetSnapshot);
   }
 
   @Nullable
@@ -294,44 +386,48 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
   // suppress use of CollectionUtils.mapValues() since the valueMapper function is dependent on map key here
   @SuppressWarnings("SSBasedInspection")
   // Used while calculating cummulative lag for entire stream
-  private Map<KafkaTopicPartition, Long> getRecordLagPerPartitionInLatestSequences(Map<KafkaTopicPartition, Long> currentOffsets)
+  private Map<KafkaTopicPartition, Long> getRecordLagPerPartitionInLatestSequences(OffsetSnapshot<KafkaTopicPartition, Long> offsetSnapshot)
   {
-    if (latestSequenceFromStream == null) {
-      return Collections.emptyMap();
-    }
-
-    return latestSequenceFromStream
-        .entrySet()
-        .stream()
-        .collect(
-            Collectors.toMap(
-                Entry::getKey,
-                e -> e.getValue() != null
-                     ? e.getValue() - Optional.ofNullable(currentOffsets.get(e.getKey())).orElse(0L)
-                     : 0
-            )
-        );
+    return offsetSnapshot.getLatestOffsetsFromStream()
+                         .entrySet()
+                         .stream()
+                         .collect(Collectors.toMap(
+                             Entry::getKey,
+                             e -> e.getValue() - offsetSnapshot.getHighestIngestedOffsets().getOrDefault(e.getKey(), 0L)
+                         ));
   }
 
+  /**
+   * Computes the record lag for the specified partitions.
+   * <p>
+   * This method is called by the parent class to calculate lag only for the partitions present in
+   * {@code currentOffsets}. The values in {@code currentOffsets} are ignored; only the keys (partitions)
+   * are used to determine which partitions to compute lag for.
+   * <p>
+   * Lag is calculated as {@code latestOffsetFromStream - highestIngestedOffset} using the current atomic
+   * {@link OffsetSnapshot} to ensure consistency between the two offset maps.
+   *
+   * @param currentOffsets map whose keys indicate the partitions to compute lag for (values are ignored)
+   * @return map of partition to its record lag, or empty map if no valid data is available
+   */
   @Override
   protected Map<KafkaTopicPartition, Long> getRecordLagPerPartition(Map<KafkaTopicPartition, Long> currentOffsets)
   {
-    if (latestSequenceFromStream == null || currentOffsets == null) {
+    OffsetSnapshot<KafkaTopicPartition, Long> offsetSnapshot = offsetSnapshotRef.get();
+    Map<KafkaTopicPartition, Long> latestSequencesFromStream = offsetSnapshot.getLatestOffsetsFromStream();
+    Map<KafkaTopicPartition, Long> highestIngestedOffsets = offsetSnapshot.getHighestIngestedOffsets();
+
+    if (latestSequencesFromStream.isEmpty() || currentOffsets == null) {
       return Collections.emptyMap();
     }
 
-    return currentOffsets
-        .entrySet()
-        .stream()
-        .filter(e -> latestSequenceFromStream.get(e.getKey()) != null)
-        .collect(
-            Collectors.toMap(
-                Entry::getKey,
-                e -> e.getValue() != null
-                     ? latestSequenceFromStream.get(e.getKey()) - e.getValue()
-                     : 0
-            )
-        );
+    return currentOffsets.keySet().stream()
+                         .filter(latestSequencesFromStream::containsKey)
+                         .collect(Collectors.toMap(
+                             Function.identity(),
+                             // compute the lag using offsets from the snapshot.
+                             p -> latestSequencesFromStream.get(p) - highestIngestedOffsets.getOrDefault(p, 0L)
+                         ));
   }
 
   @Override
@@ -342,7 +438,7 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
   }
 
   @Override
-  protected KafkaDataSourceMetadata createDataSourceMetaDataForReset(String topic, Map<KafkaTopicPartition, Long> map)
+  public KafkaDataSourceMetadata createDataSourceMetaDataForReset(String topic, Map<KafkaTopicPartition, Long> map)
   {
     return new KafkaDataSourceMetadata(new SeekableStreamEndSequenceNumbers<>(topic, map));
   }
@@ -378,9 +474,40 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
   }
 
   @Override
+  protected boolean isOffsetAtOrBeyond(Long current, Long target)
+  {
+    return current >= target;
+  }
+
+  @Override
+  protected KafkaTopicPartition createPartitionIdFromString(String partitionIdString)
+  {
+    return KafkaTopicPartition.fromString(partitionIdString);
+  }
+
+  @Override
+  protected Long createSequenceOffsetFromObject(Object offsetObj)
+  {
+    // Jackson may deserialize numbers as Integer if they fit, but Kafka needs Long
+    if (offsetObj instanceof Number) {
+      return ((Number) offsetObj).longValue();
+    }
+    if (offsetObj instanceof String) {
+      return Long.parseLong((String) offsetObj);
+    }
+    throw new IllegalArgumentException("Cannot convert " + offsetObj.getClass() + " to Long offset");
+  }
+
+  @Override
   protected boolean useExclusiveStartSequenceNumberForNonFirstSequence()
   {
     return false;
+  }
+
+  @Override
+  protected boolean isEndOffsetExclusive()
+  {
+    return true;
   }
 
   @Override
@@ -395,6 +522,25 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
   }
 
   /**
+   * Partitions to report lag for. A bounded supervisor, such as a backfill, only assigns the partitions in its bounded
+   * config, which can be a subset of the topic. Reading positions of any other partition would fail.
+   * Must be called while holding the record supplier lock.
+   */
+  private Set<KafkaTopicPartition> getPartitionsForLag()
+  {
+    if (getIoConfig().isBounded()) {
+      return new HashSet<>(partitionIds);
+    }
+    try {
+      return recordSupplier.getPartitionIds(getIoConfig().getStream());
+    }
+    catch (Exception e) {
+      log.warn("Could not fetch partitions for topic/stream [%s]", getIoConfig().getStream());
+      throw new StreamException(e);
+    }
+  }
+
+  /**
    * This method is similar to updatePartitionLagFromStream
    * but also determines time lag. Once this method has been
    * tested, we can remove the older one.
@@ -405,14 +551,7 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
 
     getRecordSupplierLock().lock();
     try {
-      Set<KafkaTopicPartition> partitionIds;
-      try {
-        partitionIds = recordSupplier.getPartitionIds(getIoConfig().getStream());
-      }
-      catch (Exception e) {
-        log.warn("Could not fetch partitions for topic/stream [%s]", getIoConfig().getStream());
-        throw new StreamException(e);
-      }
+      final Set<KafkaTopicPartition> partitionIds = getPartitionsForLag();
 
       final Set<StreamPartition<KafkaTopicPartition>> partitions = partitionIds
           .stream()
@@ -436,7 +575,7 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
       yetToReadPartitions.forEach(p -> lastIngestedTimestamps.put(p, 0L));
 
       recordSupplier.seekToLatest(partitions);
-      latestSequenceFromStream = recordSupplier.getLatestSequenceNumbers(partitions);
+      Map<KafkaTopicPartition, Long> latestSequenceFromStream = recordSupplier.getLatestSequenceNumbers(partitions);
 
       for (Map.Entry<KafkaTopicPartition, Long> entry : latestSequenceFromStream.entrySet()) {
         // if there are no messages .getEndOffset would return 0, but if there are n msgs it would return n+1
@@ -454,6 +593,8 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
                   e -> e.getValue() - lastIngestedTimestamps.get(e.getKey())
               )
           );
+
+      updateOffsetSnapshot(highestCurrentOffsets, latestSequenceFromStream);
     }
     catch (InterruptedException e) {
       throw new StreamException(e);
@@ -494,45 +635,52 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
   }
 
   /**
-   * Fetches the latest offsets from the Kafka stream and updates the map
-   * {@link #latestSequenceFromStream}. The actual lag is computed lazily in
-   * {@link #getPartitionRecordLag}.
+   * Fetches latest stream offsets, combines with the highest ingested offsets into a snapshot,
+   * and atomically updates {@link #offsetSnapshotRef}.
+   * <p>
+   * Lag is computed consistently from the snapshot in downstream methods.
+   * </p>
    */
   @Override
-  protected void updatePartitionLagFromStream()
+  public void updatePartitionLagFromStream()
   {
     if (getIoConfig().isEmitTimeLagMetrics()) {
       updatePartitionTimeAndRecordLagFromStream();
       return;
     }
 
+    Map<KafkaTopicPartition, Long> highestCurrentOffsets = getHighestCurrentOffsets();
+
     getRecordSupplierLock().lock();
     try {
-      Set<KafkaTopicPartition> partitionIds;
-      try {
-        partitionIds = recordSupplier.getPartitionIds(getIoConfig().getStream());
-      }
-      catch (Exception e) {
-        log.warn("Could not fetch partitions for topic/stream [%s]", getIoConfig().getStream());
-        throw new StreamException(e);
-      }
+      final Set<KafkaTopicPartition> partitionIds = getPartitionsForLag();
 
       Set<StreamPartition<KafkaTopicPartition>> partitions = partitionIds
           .stream()
           .map(e -> new StreamPartition<>(getIoConfig().getStream(), e))
           .collect(Collectors.toSet());
 
-      latestSequenceFromStream = recordSupplier.getLatestSequenceNumbers(partitions);
+      Map<KafkaTopicPartition, Long> latestSequenceFromStream = recordSupplier.getLatestSequenceNumbers(partitions);
+
+      updateOffsetSnapshot(highestCurrentOffsets, latestSequenceFromStream);
     }
     finally {
       getRecordSupplierLock().unlock();
     }
   }
 
-  @Override
-  protected Map<KafkaTopicPartition, Long> getLatestSequencesFromStream()
+  private void updateOffsetSnapshot(
+      Map<KafkaTopicPartition, Long> highestIngestedOffsets,
+      Map<KafkaTopicPartition, Long> latestOffsetsFromStream
+  )
   {
-    return latestSequenceFromStream != null ? latestSequenceFromStream : new HashMap<>();
+    offsetSnapshotRef.set(OffsetSnapshot.of(highestIngestedOffsets, latestOffsetsFromStream));
+  }
+
+  @Override
+  public Map<KafkaTopicPartition, Long> getLatestSequencesFromStream()
+  {
+    return offsetSnapshotRef.get().getLatestOffsetsFromStream();
   }
 
   @Override
@@ -561,9 +709,10 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
 
   /**
    * Gets the offsets as stored in the metadata store. The map returned will only contain
-   * offsets from topic partitions that match the current supervisor config stream. This
+   * offsets from topic partitions that match the current supervisor config stream, and from the partitions
+   * selected by {@code partitionIds} if it is set. This
    * override is needed because in the case of multi-topic, a user could have updated the supervisor
-   * config from single topic to mult-topic, where the new multi-topic pattern regex matches the
+   * config from single topic to multi-topic, where the new multi-topic pattern regex matches the
    * old config single topic. Without this override, the previously stored metadata for the single
    * topic would be deemed as different from the currently configure stream, and not be included in
    * the offset map returned. This implementation handles these cases appropriately.
@@ -573,7 +722,7 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
    * updated to single topic or multi-topic depending on the supervisor config, as needed.
    */
   @Override
-  protected Map<KafkaTopicPartition, Long> getOffsetsFromMetadataStorage()
+  public Map<KafkaTopicPartition, Long> getOffsetsFromMetadataStorage()
   {
     final DataSourceMetadata dataSourceMetadata = retrieveDataSourceMetadata();
     if (checkSourceMetadataMatch(dataSourceMetadata)) {
@@ -607,6 +756,13 @@ public class KafkaSupervisor extends SeekableStreamSupervisor<KafkaTopicPartitio
             partitionOffsets.put(matchingTopicPartition, value);
           }
         });
+
+        // Keep offsets for the configured partitions only. Offsets of excluded partitions stay in metadata storage.
+        final Set<Integer> selected = getIoConfig().getPartitionIds();
+        if (selected != null) {
+          partitionOffsets.keySet().removeIf(partition -> !selected.contains(partition.partition()));
+        }
+
         return partitionOffsets;
       }
     }

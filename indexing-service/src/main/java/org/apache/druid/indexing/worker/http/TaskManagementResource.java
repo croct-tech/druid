@@ -36,11 +36,10 @@ import org.apache.druid.indexing.worker.WorkerTaskManager;
 import org.apache.druid.java.util.emitter.EmittingLogger;
 import org.apache.druid.server.coordination.ChangeRequestHistory;
 import org.apache.druid.server.coordination.ChangeRequestsSnapshot;
+import org.apache.druid.server.http.ServletResourceUtils;
 import org.apache.druid.server.http.security.StateResourceFilter;
 
 import javax.servlet.AsyncContext;
-import javax.servlet.AsyncEvent;
-import javax.servlet.AsyncListener;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.Consumes;
@@ -86,10 +85,10 @@ public class TaskManagementResource
    * Here is how, this is used.
    *
    * (1) Client sends first request /druid/internal/v1/worker?counter=-1&timeout=<timeout>
-   * Server responds with current list of running/completed tasks and metadata. And, a <counter,hash> pair.
+   * Server responds with current list of running/completed tasks and metadata. And, a {@code <counter,hash>} pair.
    *
    * (2) Client sends subsequent requests /druid/internal/v1/worker?counter=<counter>&hash=<hash>&timeout=<timeout>
-   * Where <counter,hash> values are used from the last response. Server responds with changes since then.
+   * Where {@code <counter,hash>} values are used from the last response. Server responds with changes since then.
    *
    * This endpoint makes the client wait till either there is some update or given timeout elapses.
    *
@@ -129,32 +128,11 @@ public class TaskManagementResource
     final AsyncContext asyncContext = req.startAsync();
 
     asyncContext.addListener(
-        new AsyncListener()
-        {
-          @Override
-          public void onComplete(AsyncEvent event)
-          {
-          }
-
-          @Override
-          public void onTimeout(AsyncEvent event)
-          {
-
-            // HTTP 204 NO_CONTENT is sent to the client.
-            future.cancel(true);
-            event.getAsyncContext().complete();
-          }
-
-          @Override
-          public void onError(AsyncEvent event)
-          {
-          }
-
-          @Override
-          public void onStartAsync(AsyncEvent event)
-          {
-          }
-        }
+        ServletResourceUtils.createAsyncTimeoutListener(event -> {
+          // HTTP 204 NO_CONTENT is sent to the client.
+          future.cancel(true);
+          event.getAsyncContext().complete();
+        })
     );
 
     Futures.addCallback(

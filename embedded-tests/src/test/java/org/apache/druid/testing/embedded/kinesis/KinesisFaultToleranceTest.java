@@ -20,7 +20,6 @@
 package org.apache.druid.testing.embedded.kinesis;
 
 import org.apache.druid.indexing.overlord.supervisor.SupervisorSpec;
-import org.apache.druid.testing.embedded.EmbeddedDruidCluster;
 import org.apache.druid.testing.embedded.StreamIngestResource;
 import org.apache.druid.testing.embedded.indexing.StreamIndexFaultToleranceTest;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,9 +37,9 @@ public class KinesisFaultToleranceTest extends StreamIndexFaultToleranceTest
     public void publishRecordsToTopicWithoutTransaction(String topic, List<byte[]> records)
     {
       if (publishToSingleShard.get()) {
-        super.publishRecordsToTopicWithoutTransaction(topic, records);
-      } else {
         super.publishRecordsToTopicPartition(topic, "O", records);
+      } else {
+        super.publishRecordsToTopicWithoutTransaction(topic, records);
       }
     }
   };
@@ -61,12 +60,6 @@ public class KinesisFaultToleranceTest extends StreamIndexFaultToleranceTest
   protected SupervisorSpec createSupervisorSpec(String dataSource, String topic)
   {
     return createKinesisSupervisor(kinesis, dataSource, topic);
-  }
-
-  @Override
-  protected EmbeddedDruidCluster createCluster()
-  {
-    return super.createCluster().useDefaultTimeoutForLatchableEmitter(120);
   }
 
   @Test

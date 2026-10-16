@@ -30,16 +30,15 @@ import org.apache.druid.frame.processor.ReturnOrAwait;
 import org.apache.druid.frame.read.FrameReader;
 import org.apache.druid.frame.write.FrameWriterFactory;
 import org.apache.druid.java.util.common.Unit;
+import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.msq.exec.DataServerQueryHandler;
 import org.apache.druid.msq.input.table.SegmentsInputSlice;
-import org.apache.druid.segment.PhysicalSegmentInspector;
 import org.apache.druid.segment.ReferenceCountedSegmentProvider;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentMapFunction;
 import org.apache.druid.segment.SegmentReference;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
@@ -139,16 +138,25 @@ public abstract class BaseLeafFrameProcessor implements FrameProcessor<Object>
 
   /**
    * Helper intended to be used by subclasses. Applies {@link #segmentMapFn}, which applies broadcast joins
-   * if applicable to this query.
+   * and other mappings applicable to this query. Registers the {@link SegmentReference} with the provided
+   * {@link Closer}.
    */
-  @Nullable
-  protected SegmentReference mapSegment(@Nullable final SegmentReference segmentReference)
+  protected Segment mapSegment(
+      final SegmentReferenceHolder segmentHolder,
+      final Closer closer
+  )
   {
+    final SegmentReference segmentReference = segmentHolder.getSegmentReferenceOnce();
     if (segmentReference == null) {
-      return null;
+      throw DruidException.defensive("Missing segmentReference[%s]", segmentHolder.getDescriptor());
     }
 
-    return segmentReference.map(segmentMapFn);
+    final Segment segment = closer.register(segmentReference.map(segmentMapFn)).getSegmentReference().orElse(null);
+    if (segment == null) {
+      throw DruidException.defensive("Missing segment[%s]", segmentHolder.getDescriptor());
+    }
+
+    return segment;
   }
 
   /**
@@ -162,18 +170,5 @@ public abstract class BaseLeafFrameProcessor implements FrameProcessor<Object>
         "Segment[%s] went unexpectedly empty after mapping",
         segment.getId()
     ));
-  }
-
-  /**
-   * Helper to get the number of rows for a segment, using a {@link PhysicalSegmentInspector}. Returns 0 when the
-   * number is unknown.
-   */
-  protected int getSegmentRowCount(final SegmentReference segmentReference)
-  {
-    return segmentReference
-        .getSegmentReference()
-        .flatMap(segment -> Optional.ofNullable(segment.as(PhysicalSegmentInspector.class)))
-        .map(PhysicalSegmentInspector::getNumRows)
-        .orElse(0);
   }
 }

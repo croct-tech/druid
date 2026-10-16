@@ -24,8 +24,6 @@ import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.storage.azure.output.AzureStorageConnectorModule;
 import org.apache.druid.testing.embedded.EmbeddedDruidCluster;
 import org.apache.druid.testing.embedded.indexer.AbstractCloudInputSourceParallelIndexTest;
-import org.junit.Assert;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 
@@ -70,18 +68,6 @@ public abstract class AbstractAzureInputSourceParallelIndexTest extends Abstract
     }
   }
 
-  @AfterAll
-  public void deleteDataFilesFromAzure()
-  {
-    try {
-      // Deleting uploaded data files
-      azure.deleteStorageContainer();
-    }
-    catch (Exception e) {
-      LOG.warn(e, "Unable to delete container in azure");
-    }
-  }
-
   public void validateAzureSegmentFilesDeleted(String path)
   {
     List<URI> segmentFiles = ImmutableList.of();
@@ -92,10 +78,10 @@ public abstract class AbstractAzureInputSourceParallelIndexTest extends Abstract
       LOG.warn(e, "Failed to validate that azure segment files were deleted.");
     }
     finally {
-      Assert.assertEquals(
-            "Some segment files were not deleted: " + segmentFiles,
+      Assertions.assertEquals(
             segmentFiles.size(),
-            0
+            0,
+            "Some segment files were not deleted: " + segmentFiles
       );
     }
   }

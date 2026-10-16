@@ -19,17 +19,16 @@
 
 package org.apache.druid.java.util.http.client.response;
 
+import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.http.DefaultHttpContent;
+import io.netty.handler.codec.http.DefaultHttpResponse;
+import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpVersion;
 import org.apache.commons.io.IOUtils;
 import org.apache.druid.java.util.common.Either;
-import org.apache.druid.java.util.common.StringUtils;
-import org.jboss.netty.buffer.BigEndianHeapChannelBuffer;
-import org.jboss.netty.handler.codec.http.DefaultHttpChunk;
-import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
-import org.jboss.netty.handler.codec.http.HttpResponse;
-import org.jboss.netty.handler.codec.http.HttpResponseStatus;
-import org.jboss.netty.handler.codec.http.HttpVersion;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -41,8 +40,6 @@ public class ObjectOrErrorResponseHandlerTest
   public void testOk() throws Exception
   {
     HttpResponse response = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-    response.setChunked(false);
-    response.setContent(new BigEndianHeapChannelBuffer("abcd".getBytes(StringUtils.UTF8_STRING)));
 
     final ObjectOrErrorResponseHandler<InputStreamFullResponseHolder, InputStreamFullResponseHolder> responseHandler =
         new ObjectOrErrorResponseHandler<>(new InputStreamFullResponseHandler());
@@ -50,24 +47,26 @@ public class ObjectOrErrorResponseHandlerTest
     ClientResponse<Either<StringFullResponseHolder, InputStreamFullResponseHolder>> clientResp =
         responseHandler.handleResponse(response, null);
 
-    DefaultHttpChunk chunk =
-        new DefaultHttpChunk(new BigEndianHeapChannelBuffer("efg".getBytes(StringUtils.UTF8_STRING)));
-    clientResp = responseHandler.handleChunk(clientResp, chunk, 0);
+    // In Netty 4 the body arrives via HttpContent chunks after the initial HttpResponse.
+    DefaultHttpContent firstChunk =
+        new DefaultHttpContent(Unpooled.wrappedBuffer("abcd".getBytes(StandardCharsets.UTF_8)));
+    clientResp = responseHandler.handleChunk(clientResp, firstChunk, 1);
+    DefaultHttpContent secondChunk =
+        new DefaultHttpContent(Unpooled.wrappedBuffer("efg".getBytes(StandardCharsets.UTF_8)));
+    clientResp = responseHandler.handleChunk(clientResp, secondChunk, 2);
     clientResp = responseHandler.done(clientResp);
 
-    Assert.assertTrue(clientResp.isFinished());
-    Assert.assertEquals(
+    Assertions.assertTrue(clientResp.isFinished());
+    Assertions.assertEquals(
         "abcdefg",
         IOUtils.toString(clientResp.getObj().valueOrThrow().getContent(), StandardCharsets.UTF_8)
     );
   }
 
   @Test
-  public void testExceptionAfterOk() throws Exception
+  public void testExceptionAfterOk()
   {
     HttpResponse response = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-    response.setChunked(false);
-    response.setContent(new BigEndianHeapChannelBuffer("abcd".getBytes(StringUtils.UTF8_STRING)));
 
     final ObjectOrErrorResponseHandler<InputStreamFullResponseHolder, InputStreamFullResponseHolder> responseHandler =
         new ObjectOrErrorResponseHandler<>(new InputStreamFullResponseHandler());
@@ -80,23 +79,21 @@ public class ObjectOrErrorResponseHandlerTest
 
     // Exception after HTTP OK still is handled by the "OK handler"
     // (The handler that starts the request gets to finish it.)
-    Assert.assertTrue(clientResp.isFinished());
-    Assert.assertTrue(clientResp.getObj().isValue());
+    Assertions.assertTrue(clientResp.isFinished());
+    Assertions.assertTrue(clientResp.getObj().isValue());
 
     final InputStream responseStream = clientResp.getObj().valueOrThrow().getContent();
-    final IOException e = Assert.assertThrows(
+    final IOException e = Assertions.assertThrows(
         IOException.class,
         () -> IOUtils.toString(responseStream, StandardCharsets.UTF_8)
     );
-    Assert.assertEquals("java.lang.RuntimeException: dummy!", e.getMessage());
+    Assertions.assertEquals("java.lang.RuntimeException: dummy!", e.getMessage());
   }
 
   @Test
   public void testServerError() throws Exception
   {
     HttpResponse response = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.INTERNAL_SERVER_ERROR);
-    response.setChunked(false);
-    response.setContent(new BigEndianHeapChannelBuffer("abcd".getBytes(StringUtils.UTF8_STRING)));
 
     final ObjectOrErrorResponseHandler<InputStreamFullResponseHolder, InputStreamFullResponseHolder> responseHandler =
         new ObjectOrErrorResponseHandler<>(new InputStreamFullResponseHandler());
@@ -104,18 +101,22 @@ public class ObjectOrErrorResponseHandlerTest
     ClientResponse<Either<StringFullResponseHolder, InputStreamFullResponseHolder>> clientResp =
         responseHandler.handleResponse(response, null);
 
-    DefaultHttpChunk chunk =
-        new DefaultHttpChunk(new BigEndianHeapChannelBuffer("efg".getBytes(StringUtils.UTF8_STRING)));
-    clientResp = responseHandler.handleChunk(clientResp, chunk, 0);
+    // Body chunks for an error response.
+    DefaultHttpContent firstChunk =
+        new DefaultHttpContent(Unpooled.wrappedBuffer("abcd".getBytes(StandardCharsets.UTF_8)));
+    clientResp = responseHandler.handleChunk(clientResp, firstChunk, 1);
+    DefaultHttpContent secondChunk =
+        new DefaultHttpContent(Unpooled.wrappedBuffer("efg".getBytes(StandardCharsets.UTF_8)));
+    clientResp = responseHandler.handleChunk(clientResp, secondChunk, 2);
     clientResp = responseHandler.done(clientResp);
 
     // 5xx HTTP code is handled by the error handler.
-    Assert.assertTrue(clientResp.isFinished());
-    Assert.assertTrue(clientResp.getObj().isError());
-    Assert.assertEquals(
-        HttpResponseStatus.INTERNAL_SERVER_ERROR.getCode(),
-        clientResp.getObj().error().getResponse().getStatus().getCode()
+    Assertions.assertTrue(clientResp.isFinished());
+    Assertions.assertTrue(clientResp.getObj().isError());
+    Assertions.assertEquals(
+        HttpResponseStatus.INTERNAL_SERVER_ERROR.code(),
+        clientResp.getObj().error().getResponse().status().code()
     );
-    Assert.assertEquals("abcdefg", clientResp.getObj().error().getContent());
+    Assertions.assertEquals("abcdefg", clientResp.getObj().error().getContent());
   }
 }

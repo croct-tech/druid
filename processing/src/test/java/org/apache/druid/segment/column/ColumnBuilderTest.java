@@ -19,8 +19,8 @@
 
 package org.apache.druid.segment.column;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 public class ColumnBuilderTest
 {
@@ -32,7 +32,37 @@ public class ColumnBuilderTest
         .setComplexTypeName("testType")
         .build();
 
-    Assert.assertEquals("testType", holder.getCapabilities().getComplexTypeName());
+    Assertions.assertEquals("testType", holder.getCapabilities().getComplexTypeName());
 
+  }
+
+  @Test
+  public void testBuildInternsCapabilitiesAndFormat()
+  {
+    final ColumnHolder holder1 = makeLongColumnBuilder().build();
+    final ColumnHolder holder2 = makeLongColumnBuilder().build();
+    final ColumnHolder holder3 = makeLongColumnBuilder().setHasNulls(true).build();
+
+    Assertions.assertInstanceOf(ImmutableColumnCapabilities.class, holder1.getCapabilities());
+    Assertions.assertSame(holder1.getCapabilities(), holder2.getCapabilities());
+    Assertions.assertSame(holder1.getColumnFormat(), holder2.getColumnFormat());
+    Assertions.assertNotSame(holder1.getCapabilities(), holder3.getCapabilities());
+    Assertions.assertNotSame(holder1.getColumnFormat(), holder3.getColumnFormat());
+  }
+
+  @Test
+  public void testBuildSnapshotsCapabilities()
+  {
+    final ColumnBuilder builder = makeLongColumnBuilder();
+    final ColumnHolder holder = builder.build();
+    builder.setHasNulls(true);
+
+    Assertions.assertEquals(ColumnCapabilities.Capable.FALSE, holder.getCapabilities().hasNulls());
+  }
+
+  private static ColumnBuilder makeLongColumnBuilder()
+  {
+    return new ColumnBuilder().setType(ValueType.LONG)
+                              .setNumericColumnSupplier(() -> new ConstantNumericColumn(ColumnType.LONG, 1L, 10));
   }
 }

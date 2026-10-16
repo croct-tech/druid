@@ -22,30 +22,23 @@ package org.apache.druid.indexing.kafka;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import org.apache.curator.test.TestingCluster;
 import org.apache.druid.client.indexing.SamplerResponse;
 import org.apache.druid.client.indexing.SamplerSpec;
-import org.apache.druid.data.input.impl.DimensionsSpec;
 import org.apache.druid.data.input.impl.FloatDimensionSchema;
-import org.apache.druid.data.input.impl.InputRowParser;
-import org.apache.druid.data.input.impl.JSONParseSpec;
 import org.apache.druid.data.input.impl.JsonInputFormat;
 import org.apache.druid.data.input.impl.LongDimensionSchema;
 import org.apache.druid.data.input.impl.StringDimensionSchema;
-import org.apache.druid.data.input.impl.StringInputRowParser;
 import org.apache.druid.data.input.impl.TimestampSpec;
 import org.apache.druid.indexer.granularity.UniformGranularitySpec;
 import org.apache.druid.indexing.kafka.supervisor.KafkaSupervisorSpec;
 import org.apache.druid.indexing.kafka.supervisor.KafkaSupervisorSpecBuilder;
-import org.apache.druid.indexing.kafka.test.TestBroker;
+import org.apache.druid.indexing.kafka.test.EmbeddedKafkaBroker;
 import org.apache.druid.indexing.overlord.sampler.InputSourceSampler;
 import org.apache.druid.indexing.overlord.sampler.SamplerConfig;
 import org.apache.druid.indexing.overlord.sampler.SamplerException;
 import org.apache.druid.indexing.overlord.sampler.SamplerTestUtils;
-import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
-import org.apache.druid.java.util.common.parsers.JSONPathSpec;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
 import org.apache.druid.segment.TestHelper;
@@ -57,25 +50,24 @@ import org.apache.druid.server.security.ResourceType;
 import org.apache.druid.testing.InitializedNullHandlingTest;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
 {
-  @Rule
-  public ExpectedException expectedException = ExpectedException.none();
 
   private static final ObjectMapper OBJECT_MAPPER = TestHelper.makeJsonMapper();
   private static final String TOPIC = "sampling";
@@ -105,8 +97,7 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
         schema.withTimestamp(new TimestampSpec("kafka.timestamp", "iso", null));
       };
 
-  private static TestingCluster zkServer;
-  private static TestBroker kafkaServer;
+  private static EmbeddedKafkaBroker kafkaServer;
 
   private static List<ProducerRecord<byte[], byte[]>> generateRecords(String topic)
   {
@@ -120,21 +111,41 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
     );
   }
 
-  @BeforeClass
-  public static void setupClass() throws Exception
+  @BeforeAll
+  public static void setupClass()
   {
-    zkServer = new TestingCluster(1);
-    zkServer.start();
-
-    kafkaServer = new TestBroker(zkServer.getConnectString(), null, 1, ImmutableMap.of("num.partitions", "2"));
+    kafkaServer = new EmbeddedKafkaBroker(ImmutableMap.of("KAFKA_NUM_PARTITIONS", "2"));
     kafkaServer.start();
   }
 
-  @AfterClass
-  public static void tearDownClass() throws Exception
+  @AfterAll
+  public static void tearDownClass()
   {
     kafkaServer.close();
-    zkServer.stop();
+  }
+
+  @Test
+  public void testSampleOnlySelectedPartition()
+  {
+    final String topic = TOPIC + "_selected";
+    insertData(List.of(
+        new ProducerRecord<>(topic, 0, null, jb("2008", "excluded", "y", "10", "20.0", "1.0")),
+        new ProducerRecord<>(topic, 1, null, jb("2008", "selected", "y", "10", "20.0", "1.0"))
+    ));
+    final KafkaSupervisorSpec spec = new KafkaSupervisorSpecBuilder()
+        .withDataSchema(DATA_SCHEMA)
+        .withIoConfig(io -> io.withJsonInputFormat().withConsumerProperties(kafkaServer.consumerProperties())
+                             .withUseEarliestSequenceNumber(true).withPartitionIds(Set.of(1)))
+        .build(DATASOURCE, topic);
+    final SamplerResponse response = new KafkaSamplerSpec(
+        spec,
+        new SamplerConfig(1, 5_000, null, null),
+        new InputSourceSampler(OBJECT_MAPPER),
+        OBJECT_MAPPER
+    ).sample();
+
+    Assertions.assertEquals(1, response.getNumRowsIndexed());
+    Assertions.assertEquals("selected", response.getData().get(0).getParsed().get("dim1"));
   }
 
   @Test
@@ -211,11 +222,11 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
 
     SamplerResponse response = samplerSpec.sample();
 
-    Assert.assertEquals(5, response.getNumRowsRead());
+    Assertions.assertEquals(5, response.getNumRowsRead());
     // we can parse an extra row compared to other generated data samples because we are using kafka timestamp
     // for timestamp
-    Assert.assertEquals(4, response.getNumRowsIndexed());
-    Assert.assertEquals(5, response.getData().size());
+    Assertions.assertEquals(4, response.getNumRowsIndexed());
+    Assertions.assertEquals(5, response.getData().size());
 
     Iterator<SamplerResponse.SamplerResponseRow> it = response.getData().iterator();
 
@@ -225,76 +236,29 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
 
     for (int i = 0; i < 4; i++) {
       nextRow = it.next();
-      Assert.assertNull(nextRow.isUnparseable());
+      Assertions.assertNull(nextRow.isUnparseable());
       rawInput = nextRow.getInput();
       parsedInput = nextRow.getParsed();
-      Assert.assertTrue(rawInput.containsKey("kafka.timestamp"));
-      Assert.assertEquals(rawInput.get("kafka.timestamp"), parsedInput.get("__time"));
+      Assertions.assertTrue(rawInput.containsKey("kafka.timestamp"));
+      Assertions.assertEquals(rawInput.get("kafka.timestamp"), parsedInput.get("__time"));
     }
     nextRow = it.next();
-    Assert.assertTrue(nextRow.isUnparseable());
+    Assertions.assertTrue(nextRow.isUnparseable());
 
-    Assert.assertFalse(it.hasNext());
-  }
-
-  @Test
-  public void testWithInputRowParser()
-  {
-    insertData(generateRecords(TOPIC));
-
-    ObjectMapper objectMapper = new DefaultObjectMapper();
-    TimestampSpec timestampSpec = new TimestampSpec("timestamp", "iso", null);
-    DimensionsSpec dimensionsSpec = new DimensionsSpec(
-        Arrays.asList(
-            new StringDimensionSchema("dim1"),
-            new StringDimensionSchema("dim1t"),
-            new StringDimensionSchema("dim2"),
-            new LongDimensionSchema("dimLong"),
-            new FloatDimensionSchema("dimFloat")
-        )
-    );
-    InputRowParser parser = new StringInputRowParser(new JSONParseSpec(timestampSpec, dimensionsSpec, JSONPathSpec.DEFAULT, null, null), "UTF8");
-
-    Consumer<DataSchema.Builder> dataSchema =
-        builder -> builder.withDataSource("test_ds")
-                          .withParserMap(objectMapper.convertValue(parser, Map.class))
-                          .withAggregators(
-                              new DoubleSumAggregatorFactory("met1sum", "met1"),
-                              new CountAggregatorFactory("rows")
-                          )
-                          .withGranularity(new UniformGranularitySpec(Granularities.DAY, Granularities.NONE, null))
-                          .withObjectMapper(objectMapper);
-
-    KafkaSupervisorSpec supervisorSpec = new KafkaSupervisorSpecBuilder()
-        .withDataSchema(dataSchema)
-        .withIoConfig(
-            ioConfig -> ioConfig
-                .withConsumerProperties(kafkaServer.consumerProperties())
-                .withUseEarliestSequenceNumber(true)
-        )
-        .build(DATASOURCE, TOPIC);
-
-    KafkaSamplerSpec samplerSpec = new KafkaSamplerSpec(
-        supervisorSpec,
-        new SamplerConfig(5, 5_000, null, null),
-        new InputSourceSampler(new DefaultObjectMapper()),
-        OBJECT_MAPPER
-    );
-
-    runSamplerAndCompareResponse(samplerSpec, false);
+    Assertions.assertFalse(it.hasNext());
   }
 
   private static void runSamplerAndCompareResponse(SamplerSpec samplerSpec, boolean useInputFormat)
   {
     SamplerResponse response = samplerSpec.sample();
 
-    Assert.assertEquals(5, response.getNumRowsRead());
-    Assert.assertEquals(3, response.getNumRowsIndexed());
-    Assert.assertEquals(5, response.getData().size());
+    Assertions.assertEquals(5, response.getNumRowsRead());
+    Assertions.assertEquals(3, response.getNumRowsIndexed());
+    Assertions.assertEquals(5, response.getData().size());
 
     Iterator<SamplerResponse.SamplerResponseRow> it = response.getData().iterator();
 
-    Assert.assertEquals(new SamplerResponse.SamplerResponseRow(
+    Assertions.assertEquals(new SamplerResponse.SamplerResponseRow(
         new SamplerTestUtils.MapAllowingNullValuesBuilder<String, Object>()
             .put("timestamp", "2008")
             .put("dim1", "a")
@@ -316,7 +280,7 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
         null,
         null
     ), it.next());
-    Assert.assertEquals(new SamplerResponse.SamplerResponseRow(
+    Assertions.assertEquals(new SamplerResponse.SamplerResponseRow(
         new SamplerTestUtils.MapAllowingNullValuesBuilder<String, Object>()
             .put("timestamp", "2009")
             .put("dim1", "b")
@@ -338,7 +302,7 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
         null,
         null
     ), it.next());
-    Assert.assertEquals(new SamplerResponse.SamplerResponseRow(
+    Assertions.assertEquals(new SamplerResponse.SamplerResponseRow(
         new SamplerTestUtils.MapAllowingNullValuesBuilder<String, Object>()
             .put("timestamp", "2010")
             .put("dim1", "c")
@@ -360,7 +324,7 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
         null,
         null
     ), it.next());
-    Assert.assertEquals(new SamplerResponse.SamplerResponseRow(
+    Assertions.assertEquals(new SamplerResponse.SamplerResponseRow(
         new SamplerTestUtils.MapAllowingNullValuesBuilder<String, Object>()
             .put("timestamp", "246140482-04-24T15:36:27.903Z")
             .put("dim1", "x")
@@ -373,14 +337,14 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
         true,
         "Encountered row with timestamp[246140482-04-24T15:36:27.903Z] that cannot be represented as a long: [{timestamp=246140482-04-24T15:36:27.903Z, dim1=x, dim2=z, dimLong=10, dimFloat=20.0, met1=1.0}]"
     ), it.next());
-    Assert.assertEquals(new SamplerResponse.SamplerResponseRow(
+    Assertions.assertEquals(new SamplerResponse.SamplerResponseRow(
         null,
         null,
         true,
         "Unable to parse row [unparseable]" + (useInputFormat ? " into JSON" : "")
     ), it.next());
 
-    Assert.assertFalse(it.hasNext());
+    Assertions.assertFalse(it.hasNext());
   }
 
   private static void insertData(List<ProducerRecord<byte[], byte[]>> data)
@@ -417,31 +381,33 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
   @Test
   public void testInvalidKafkaConfig()
   {
-    KafkaSupervisorSpec supervisorSpec = new KafkaSupervisorSpecBuilder()
-        .withIoConfig(
-            ioConfig -> ioConfig
-                .withJsonInputFormat()
-                .withConsumerProperties(Map.of("bootstrap.servers", "invalid"))
-                .withUseEarliestSequenceNumber(true)
-        )
-        .build(DATASOURCE, TOPIC);
+    Throwable exception = assertThrows(SamplerException.class, () -> {
+      KafkaSupervisorSpec supervisorSpec = new KafkaSupervisorSpecBuilder()
+          .withDataSchema(DATA_SCHEMA)
+          .withIoConfig(
+              ioConfig -> ioConfig
+                  .withJsonInputFormat()
+                  .withConsumerProperties(Map.of("bootstrap.servers", "invalid"))
+                  .withUseEarliestSequenceNumber(true)
+          )
+          .build(DATASOURCE, TOPIC);
 
-    KafkaSamplerSpec samplerSpec = new KafkaSamplerSpec(
-        supervisorSpec,
-        new SamplerConfig(5, null, null, null),
-        new InputSourceSampler(OBJECT_MAPPER),
-        OBJECT_MAPPER
-    );
-
-    expectedException.expect(SamplerException.class);
-    expectedException.expectMessage("Invalid url in bootstrap.servers");
-    samplerSpec.sample();
+      KafkaSamplerSpec samplerSpec = new KafkaSamplerSpec(
+          supervisorSpec,
+          new SamplerConfig(5, null, null, null),
+          new InputSourceSampler(OBJECT_MAPPER),
+          OBJECT_MAPPER
+      );
+      samplerSpec.sample();
+    });
+    assertTrue(exception.getMessage().contains("Invalid url in bootstrap.servers"));
   }
 
   @Test
   public void testGetInputSourceResources()
   {
     KafkaSupervisorSpec supervisorSpec = new KafkaSupervisorSpecBuilder()
+        .withDataSchema(DATA_SCHEMA)
         .withIoConfig(
             ioConfig -> ioConfig
                 .withJsonInputFormat()
@@ -457,7 +423,7 @@ public class KafkaSamplerSpecTest extends InitializedNullHandlingTest
         OBJECT_MAPPER
     );
 
-    Assert.assertEquals(
+    Assertions.assertEquals(
         Collections.singleton(
             new ResourceAction(new Resource(
                 KafkaIndexTaskModule.SCHEME,

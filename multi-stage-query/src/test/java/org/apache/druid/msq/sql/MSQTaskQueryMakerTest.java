@@ -31,6 +31,8 @@ import com.google.inject.testing.fieldbinder.BoundFieldModule;
 import com.google.inject.util.Modules;
 import org.apache.calcite.jdbc.JavaTypeFactoryImpl;
 import org.apache.druid.client.ImmutableSegmentLoadInfo;
+import org.apache.druid.client.coordinator.CoordinatorClient;
+import org.apache.druid.client.coordinator.NoopCoordinatorClient;
 import org.apache.druid.frame.testutil.FrameTestUtil;
 import org.apache.druid.guice.ConfigModule;
 import org.apache.druid.guice.DruidGuiceExtensions;
@@ -56,7 +58,6 @@ import org.apache.druid.msq.indexing.report.MSQTaskReportPayload;
 import org.apache.druid.msq.test.MSQTestBase;
 import org.apache.druid.msq.test.MSQTestOverlordServiceClient;
 import org.apache.druid.msq.test.MSQTestTaskActionClient;
-import org.apache.druid.query.DruidProcessingConfig;
 import org.apache.druid.query.Druids;
 import org.apache.druid.query.ForwardingQueryProcessingPool;
 import org.apache.druid.query.InlineDataSource;
@@ -92,6 +93,7 @@ import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.join.JoinConditionAnalysis;
 import org.apache.druid.segment.join.JoinType;
 import org.apache.druid.segment.join.JoinableFactoryWrapper;
+import org.apache.druid.segment.loading.external.VirtualStorageManager;
 import org.apache.druid.server.QueryResponse;
 import org.apache.druid.server.QueryStackTests;
 import org.apache.druid.server.SegmentManager;
@@ -106,16 +108,18 @@ import org.apache.druid.sql.calcite.util.TestDataBuilder;
 import org.apache.druid.sql.destination.IngestDestination;
 import org.apache.druid.test.utils.TestSegmentManager;
 import org.apache.druid.timeline.DataSegment;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.junit.MockitoJUnit;
-import org.mockito.junit.MockitoRule;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -129,13 +133,12 @@ import static org.apache.druid.sql.calcite.BaseCalciteQueryTest.expressionVirtua
 import static org.apache.druid.sql.calcite.table.RowSignatures.toRelDataType;
 import static org.mockito.Mockito.when;
 
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.WARN)
 public class MSQTaskQueryMakerTest
 {
   private static final Closer CLOSER = Closer.create();
   private static final JavaTypeFactoryImpl JAVA_TYPE_FACTORY = new JavaTypeFactoryImpl();
-
-  @Rule
-  public MockitoRule mockitoRule = MockitoJUnit.rule();
 
   @Bind
   private SpecificSegmentsQuerySegmentWalker walker;
@@ -174,7 +177,7 @@ public class MSQTaskQueryMakerTest
 
   private MSQTaskQueryMaker msqTaskQueryMaker;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception
   {
     objectMapper = TestHelper.makeJsonMapper();
@@ -218,10 +221,15 @@ public class MSQTaskQueryMakerTest
         new SegmentWranglerModule(),
         new LookylooModule(),
         new MSQIndexingModule(),
-        binder -> binder.bind(WireTransferableContext.class).toInstance(FrameTestUtil.WT_CONTEXT_LEGACY)
+        binder -> {
+          binder.bind(WireTransferableContext.class).toInstance(FrameTestUtil.WT_CONTEXT_LEGACY);
+          binder.bind(CoordinatorClient.class).to(NoopCoordinatorClient.class);
+          binder.bind(VirtualStorageManager.class).toInstance(MSQTestBase.makeNilVirtualStorageManager());
+        }
     );
     Injector injector = Guice.createInjector(defaultModule, BoundFieldModule.of(this));
     DruidSecondaryModule.setupJackson(injector, objectMapper, Collections.emptyMap(), true);
+    new MSQIndexingModule().getJacksonModules().forEach(objectMapper::registerModule);
 
     // Populate loadedSegmentMetadata from walker segments so CoordinatorClient.fetchSegment() can find them
     List<ImmutableSegmentLoadInfo> loadedSegmentMetadata = new ArrayList<>();
@@ -263,7 +271,7 @@ public class MSQTaskQueryMakerTest
                                                                             .get()
                                                                             .get(MSQTaskReport.REPORT_KEY)
                                                                             .getPayload();
-    Assert.assertTrue(payload.getStatus().getStatus().isSuccess());
+    Assertions.assertTrue(payload.getStatus().getStatus().isSuccess());
     ImmutableList<Object[]> expectedResults = ImmutableList.of(
         new Object[]{1L, ""},
         new Object[]{1L, "10.1"},
@@ -301,9 +309,9 @@ public class MSQTaskQueryMakerTest
                                                                             .get()
                                                                             .get(MSQTaskReport.REPORT_KEY)
                                                                             .getPayload();
-    Assert.assertTrue(payload.getStatus().getStatus().isFailure());
+    Assertions.assertTrue(payload.getStatus().getStatus().isFailure());
     MSQErrorReport errorReport = payload.getStatus().getErrorReport();
-    Assert.assertTrue(errorReport.getFault().getErrorMessage().contains("Failed security validation with segment"));
+    Assertions.assertTrue(errorReport.getFault().getErrorMessage().contains("Failed security validation with segment"));
   }
 
   @Test
@@ -341,7 +349,7 @@ public class MSQTaskQueryMakerTest
                                                                             .get()
                                                                             .get(MSQTaskReport.REPORT_KEY)
                                                                             .getPayload();
-    Assert.assertTrue(payload.getStatus().getStatus().isSuccess());
+    Assertions.assertTrue(payload.getStatus().getStatus().isSuccess());
     ImmutableList<Object[]> expectedResults = ImmutableList.of(new Object[]{1L, "abc"});
     assertResultsEquals(
         "select cnt, dim1 from foo (with restriction)",
@@ -389,7 +397,7 @@ public class MSQTaskQueryMakerTest
                                                                             .get()
                                                                             .get(MSQTaskReport.REPORT_KEY)
                                                                             .getPayload();
-    Assert.assertTrue(payload.getStatus().getStatus().isSuccess());
+    Assertions.assertTrue(payload.getStatus().getStatus().isSuccess());
     ImmutableList<Object[]> expectedResults = ImmutableList.of(new Object[]{"10.1", "b"}, new Object[]{"10.1", "c"});
     assertResultsEquals(
         "SELECT dim1 FROM foo, UNNEST(MV_TO_ARRAY(dim3)) as unnested (d3) (with restriction)",
@@ -428,7 +436,7 @@ public class MSQTaskQueryMakerTest
                                                                             .get()
                                                                             .get(MSQTaskReport.REPORT_KEY)
                                                                             .getPayload();
-    Assert.assertTrue(payload.getStatus().getStatus().isSuccess());
+    Assertions.assertTrue(payload.getStatus().getStatus().isSuccess());
     ImmutableList<Object[]> expectedResults = ImmutableList.of(new Object[]{2L});
     assertResultsEquals("select 1 + 1", expectedResults, payload.getResults().getResults());
   }
@@ -458,7 +466,7 @@ public class MSQTaskQueryMakerTest
                                                                             .get(MSQTaskReport.REPORT_KEY)
                                                                             .getPayload();
     // Assert
-    Assert.assertTrue(payload.getStatus().getStatus().isSuccess());
+    Assertions.assertTrue(payload.getStatus().getStatus().isSuccess());
     ImmutableList<Object[]> expectedResults = ImmutableList.of(
         new Object[]{"mysteryvalue"},
         new Object[]{"x6"},
@@ -523,9 +531,9 @@ public class MSQTaskQueryMakerTest
                                                                             .get()
                                                                             .get(MSQTaskReport.REPORT_KEY)
                                                                             .getPayload();
-    Assert.assertTrue(payload.getStatus().getStatus().isFailure());
+    Assertions.assertTrue(payload.getStatus().getStatus().isFailure());
     MSQErrorReport errorReport = payload.getStatus().getErrorReport();
-    Assert.assertTrue(errorReport.getFault().getErrorMessage().contains("Failed security validation with segment"));
+    Assertions.assertTrue(errorReport.getFault().getErrorMessage().contains("Failed security validation with segment"));
   }
 
   @Test
@@ -584,9 +592,9 @@ public class MSQTaskQueryMakerTest
                                                                             .get()
                                                                             .get(MSQTaskReport.REPORT_KEY)
                                                                             .getPayload();
-    Assert.assertTrue(payload.getStatus().getStatus().isFailure());
+    Assertions.assertTrue(payload.getStatus().getStatus().isFailure());
     MSQErrorReport errorReport = payload.getStatus().getErrorReport();
-    Assert.assertTrue(errorReport.getFault().getErrorMessage().contains("Failed security validation with segment"));
+    Assertions.assertTrue(errorReport.getFault().getErrorMessage().contains("Failed security validation with segment"));
   }
 
   @Test
@@ -644,7 +652,7 @@ public class MSQTaskQueryMakerTest
                                                                             .get()
                                                                             .get(MSQTaskReport.REPORT_KEY)
                                                                             .getPayload();
-    Assert.assertTrue(payload.getStatus().getStatus().isSuccess());
+    Assertions.assertTrue(payload.getStatus().getStatus().isSuccess());
     ImmutableList<Object[]> expectedResults = ImmutableList.of(new Object[]{"abc", 1L});
     assertResultsEquals(
         "select dim1, q.c from foo, (select count(*) c from foo) q",
@@ -679,10 +687,8 @@ public class MSQTaskQueryMakerTest
         ingestDestination,
         fakeOverlordClient,
         plannerContextMock,
-        objectMapper,
         fieldMapping,
-        terminalStageSpecFactory,
-        new MSQTaskQueryKitSpecFactory(new DruidProcessingConfig())
+        terminalStageSpecFactory
     );
   }
 }

@@ -19,7 +19,6 @@
 
 package org.apache.druid.testing.embedded.msq;
 
-import com.amazonaws.services.s3.model.S3ObjectSummary;
 import org.apache.druid.data.input.impl.LocalInputSource;
 import org.apache.druid.indexer.TaskState;
 import org.apache.druid.java.util.common.DateTimes;
@@ -41,7 +40,7 @@ import org.apache.druid.testing.embedded.EmbeddedIndexer;
 import org.apache.druid.testing.embedded.EmbeddedOverlord;
 import org.apache.druid.testing.embedded.EmbeddedRouter;
 import org.apache.druid.testing.embedded.junit5.EmbeddedClusterTestBase;
-import org.apache.druid.testing.embedded.minio.MinIOStorageResource;
+import org.apache.druid.testing.embedded.s3.S3StorageResource;
 import org.hamcrest.MatcherAssert;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Assertions;
@@ -49,6 +48,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.shaded.com.google.common.io.ByteStreams;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 import java.io.File;
 import java.io.IOException;
@@ -60,7 +60,7 @@ import java.util.stream.Collectors;
 
 /**
  * Embedded test to batch-ingest wikipedia data from {@link #loadWikipediaTable()}, then query that data
- * with MSQ tasks using MinIO-based durable storage.
+ * with MSQ tasks using S3-based durable storage.
  */
 public class EmbeddedDurableShuffleStorageTest extends EmbeddedClusterTestBase
 {
@@ -70,8 +70,8 @@ public class EmbeddedDurableShuffleStorageTest extends EmbeddedClusterTestBase
   private final EmbeddedHistorical historical = new EmbeddedHistorical();
   private final EmbeddedCoordinator coordinator = new EmbeddedCoordinator();
   private final EmbeddedRouter router = new EmbeddedRouter();
-  private final MinIOStorageResource storageResource = new MinIOStorageResource();
-  private final MinIODurableStorageResource msqStorageResource = new MinIODurableStorageResource(storageResource);
+  private final S3StorageResource storageResource = new S3StorageResource();
+  private final S3DurableStorageResource msqStorageResource = new S3DurableStorageResource(storageResource);
 
   private EmbeddedMSQApis msqApis;
 
@@ -278,10 +278,10 @@ public class EmbeddedDurableShuffleStorageTest extends EmbeddedClusterTestBase
         queryId
     );
 
-    final List<S3ObjectSummary> queryResultObjects =
+    final List<S3Object> queryResultObjects =
         storageResource.getS3Client()
-                       .listObjects(storageResource.getBucket(), resultsBaseKey)
-                       .getObjectSummaries();
+                       .listObjects(builder -> builder.bucket(storageResource.getBucket()).prefix(resultsBaseKey))
+                       .contents();
 
     final int lastStage = stages.size() - 1;
     Assertions.assertEquals(
@@ -291,7 +291,7 @@ public class EmbeddedDurableShuffleStorageTest extends EmbeddedClusterTestBase
             StringUtils.format("%s/stage_%s/worker_0/taskId_%s-worker0_0/part_0", resultsBaseKey, lastStage, queryId),
             StringUtils.format("%s/stage_%s/worker_1/taskId_%s-worker1_0/part_1", resultsBaseKey, lastStage, queryId)
         ),
-        queryResultObjects.stream().map(S3ObjectSummary::getKey).collect(Collectors.toSet())
+        queryResultObjects.stream().map(S3Object::key).collect(Collectors.toSet())
     );
   }
 

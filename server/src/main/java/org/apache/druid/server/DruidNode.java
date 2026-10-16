@@ -22,17 +22,18 @@ package org.apache.druid.server;
 import com.fasterxml.jackson.annotation.JacksonInject;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.OptBoolean;
 import com.google.common.base.Preconditions;
 import com.google.common.net.HostAndPort;
 import com.google.inject.name.Named;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.NotNull;
 import org.apache.druid.common.guava.GuavaUtils;
 import org.apache.druid.common.utils.SocketUtil;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
 
 import javax.annotation.Nullable;
-import javax.validation.constraints.Max;
-import javax.validation.constraints.NotNull;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -93,7 +94,15 @@ public class DruidNode
   );
 
   @JsonProperty
+  @NotNull
+  private final String buildRevision = BuildInfo.getBuildRevision();
+
+  @JsonProperty
   private Map<String, String> labels;
+
+  @JsonProperty
+  @Max(0xffff)
+  private int advertisedPlaintextPort = -1;
 
   public DruidNode(
       String serviceName,
@@ -105,7 +114,36 @@ public class DruidNode
       boolean enableTlsPort
   )
   {
-    this(serviceName, host, bindOnHost, plaintextPort, null, tlsPort, enablePlaintextPort, enableTlsPort, null);
+    this(serviceName, host, bindOnHost, plaintextPort, null, tlsPort, enablePlaintextPort, enableTlsPort, null, null);
+  }
+
+  public DruidNode(
+      String serviceName,
+      String host,
+      boolean bindOnHost,
+      Integer plaintextPort,
+      Integer port,
+      Integer tlsPort,
+      Boolean enablePlaintextPort,
+      boolean enableTlsPort
+  )
+  {
+    this(serviceName, host, bindOnHost, plaintextPort, port, tlsPort, enablePlaintextPort, enableTlsPort, null, null);
+  }
+
+  public DruidNode(
+      String serviceName,
+      String host,
+      boolean bindOnHost,
+      Integer plaintextPort,
+      Integer port,
+      Integer tlsPort,
+      Boolean enablePlaintextPort,
+      boolean enableTlsPort,
+      Map<String, String> labels
+  )
+  {
+    this(serviceName, host, bindOnHost, plaintextPort, port, tlsPort, enablePlaintextPort, enableTlsPort, labels, null);
   }
 
   /**
@@ -126,15 +164,16 @@ public class DruidNode
    */
   @JsonCreator
   public DruidNode(
-      @JacksonInject @Named("serviceName") @JsonProperty("service") String serviceName,
+      @JacksonInject(useInput = OptBoolean.TRUE) @Named("serviceName") @JsonProperty("service") String serviceName,
       @JsonProperty("host") String host,
       @JsonProperty("bindOnHost") boolean bindOnHost,
       @JsonProperty("plaintextPort") Integer plaintextPort,
-      @JacksonInject @Named("servicePort") @JsonProperty("port") Integer port,
-      @JacksonInject @Named("tlsServicePort") @JsonProperty("tlsPort") Integer tlsPort,
+      @JacksonInject(useInput = OptBoolean.TRUE) @Named("servicePort") @JsonProperty("port") Integer port,
+      @JacksonInject(useInput = OptBoolean.TRUE) @Named("tlsServicePort") @JsonProperty("tlsPort") Integer tlsPort,
       @JsonProperty("enablePlaintextPort") Boolean enablePlaintextPort,
       @JsonProperty("enableTlsPort") boolean enableTlsPort,
-      @JsonProperty("labels") @Nullable Map<String, String> labels
+      @JsonProperty("labels") @Nullable Map<String, String> labels,
+      @JsonProperty("advertisedPlaintextPort") Integer advertisedPlaintextPort
   )
   {
     init(
@@ -145,7 +184,8 @@ public class DruidNode
         tlsPort,
         enablePlaintextPort == null || enablePlaintextPort.booleanValue(),
         enableTlsPort,
-        labels
+        labels,
+        advertisedPlaintextPort
     );
   }
 
@@ -157,7 +197,8 @@ public class DruidNode
       Integer tlsPort,
       boolean enablePlaintextPort,
       boolean enableTlsPort,
-      Map<String, String> labels
+      Map<String, String> labels,
+      Integer advertisedPlaintextPort
   )
   {
     Preconditions.checkNotNull(serviceName);
@@ -205,8 +246,12 @@ public class DruidNode
         }
       }
       this.plaintextPort = plainTextPort;
+      this.advertisedPlaintextPort = advertisedPlaintextPort != null && advertisedPlaintextPort > 0
+                                     ? advertisedPlaintextPort
+                                     : this.plaintextPort;
     } else {
       this.plaintextPort = -1;
+      this.advertisedPlaintextPort = -1;
     }
     if (enableTlsPort) {
       this.tlsPort = tlsPort;
@@ -241,6 +286,9 @@ public class DruidNode
     return bindOnHost;
   }
 
+  /**
+   * Port Jetty binds to. Peers should use {@link #getAdvertisedPlaintextPort()} or {@link #getPortToUse()}.
+   */
   public int getPlaintextPort()
   {
     return plaintextPort;
@@ -266,9 +314,22 @@ public class DruidNode
     return version;
   }
 
+  public String getBuildRevision()
+  {
+    return buildRevision;
+  }
+
+  /**
+   * Plaintext port peers use to reach this node; falls back to {@link #getPlaintextPort()} when unset.
+   */
+  public int getAdvertisedPlaintextPort()
+  {
+    return advertisedPlaintextPort;
+  }
+
   public DruidNode withService(String service)
   {
-    return new DruidNode(service, host, bindOnHost, plaintextPort, tlsPort, enablePlaintextPort, enableTlsPort);
+    return new DruidNode(service, host, bindOnHost, plaintextPort, null, tlsPort, enablePlaintextPort, enableTlsPort, labels, advertisedPlaintextPort);
   }
 
   public String getServiceScheme()
@@ -282,10 +343,10 @@ public class DruidNode
   public String getHostAndPort()
   {
     if (enablePlaintextPort) {
-      if (plaintextPort < 0) {
+      if (advertisedPlaintextPort < 0) {
         return HostAndPort.fromString(host).toString();
       } else {
-        return HostAndPort.fromParts(host, plaintextPort).toString();
+        return HostAndPort.fromParts(host, advertisedPlaintextPort).toString();
       }
     }
     return null;
@@ -304,7 +365,7 @@ public class DruidNode
     if (enableTlsPort) {
       return getTlsPort();
     } else {
-      return getPlaintextPort();
+      return getAdvertisedPlaintextPort();
     }
   }
 
@@ -349,6 +410,7 @@ public class DruidNode
            enablePlaintextPort == druidNode.enablePlaintextPort &&
            tlsPort == druidNode.tlsPort &&
            enableTlsPort == druidNode.enableTlsPort &&
+           advertisedPlaintextPort == druidNode.advertisedPlaintextPort &&
            Objects.equals(serviceName, druidNode.serviceName) &&
            Objects.equals(host, druidNode.host) &&
            Objects.equals(labels, druidNode.labels);
@@ -357,7 +419,7 @@ public class DruidNode
   @Override
   public int hashCode()
   {
-    return Objects.hash(serviceName, host, port, plaintextPort, enablePlaintextPort, tlsPort, enableTlsPort, labels);
+    return Objects.hash(serviceName, host, port, plaintextPort, enablePlaintextPort, tlsPort, enableTlsPort, labels, advertisedPlaintextPort);
   }
 
   @Override
@@ -369,6 +431,7 @@ public class DruidNode
            ", bindOnHost=" + bindOnHost +
            ", port=" + port +
            ", plaintextPort=" + plaintextPort +
+           ", advertisedPlaintextPort=" + advertisedPlaintextPort +
            ", enablePlaintextPort=" + enablePlaintextPort +
            ", tlsPort=" + tlsPort +
            ", enableTlsPort=" + enableTlsPort +

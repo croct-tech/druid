@@ -24,11 +24,11 @@ sidebar_label: "All functions"
   -->
 
 :::info
- Apache Druid supports two query languages: Druid SQL and [native queries](querying.md).
+ Apache&circledR; Druid supports two query languages: Druid SQL and [native queries](querying.md).
  This document describes the SQL language.
 :::
 
-This page provides a reference of Apache Druid&circledR; SQL functions in alphabetical order. For more details on a function, refer to the following:
+This page provides a reference of Apache&circledR; Druid SQL functions in alphabetical order. For more details on a function, refer to the following:
 * [Aggregation functions](sql-aggregations.md)
 * [Array functions](sql-array-functions.md)
 * [JSON functions](sql-json-functions.md)
@@ -1520,6 +1520,31 @@ Returns the following:
 
 [Learn more](sql-scalar.md#other-scalar-functions)
 
+## CBRT
+
+Calculates the cube root of `expr`.
+
+* **Syntax:** `CBRT(expr)`
+* **Function type:** Scalar, numeric
+
+<details>
+<summary>Example</summary>
+
+The following example calculates the cube root of 27.
+
+```sql
+SELECT CBRT(27) AS "cube_root"
+```
+Returns the following:
+
+| `cube_root` |
+| -- |
+| `3` |
+
+</details>
+
+[Learn more](sql-scalar.md#numeric-functions)
+
 ## CEIL
 
 ### Date and time
@@ -1706,6 +1731,30 @@ Returns the following:
 | `cosine` |  
 | -- |
 | `0.5000000000000001` |
+</details>
+
+[Learn more](sql-scalar.md#numeric-functions)
+
+## COSH
+
+Calculates the hyperbolic cosine of `expr`.
+
+* **Syntax:** `COSH(expr)`
+* **Function type:** Scalar, numeric
+
+<details>
+<summary>Example</summary>
+
+The following example calculates the hyperbolic cosine of `1`.
+
+```sql
+SELECT COSH(1) AS "hyperbolic_cosine"
+```
+Returns the following:
+
+| `hyperbolic_cosine` |
+| -- |
+| `1.5430806348152437` |
 </details>
 
 [Learn more](sql-scalar.md#numeric-functions)
@@ -5214,6 +5263,30 @@ Returns the following:
 
 [Learn more](sql-scalar.md#numeric-functions)
 
+## SINH
+
+Calculates the hyperbolic sine of `expr`.
+
+* **Syntax:** `SINH(expr)`
+* **Function type:** Scalar, numeric
+
+<details>
+<summary>Example</summary>
+
+The following example calculates the hyperbolic sine of `1`.
+
+```sql
+SELECT SINH(1) AS "hyperbolic_sine"
+```
+Returns the following:
+
+| `hyperbolic_sine` |
+| -- |
+| `1.1752011936438014` |
+</details>
+
+[Learn more](sql-scalar.md#numeric-functions)
+
 ## SQRT
 
 Calculates the square root of a numeric expression.
@@ -5525,6 +5598,30 @@ Returns the following:
 | `tangent` |  
 | -- |
 | `1.7320508075688767` |
+</details>
+
+[Learn more](sql-scalar.md#numeric-functions)
+
+## TANH
+
+Calculates the hyperbolic tangent of `expr`.
+
+* **Syntax:** `TANH(expr)`
+* **Function type:** Scalar, numeric
+
+<details>
+<summary>Example</summary>
+
+The following example calculates the hyperbolic tangent of `1`.
+
+```sql
+SELECT TANH(1) AS "hyperbolic_tangent"
+```
+Returns the following:
+
+| `hyperbolic_tangent` |
+| -- |
+| `0.7615941559557649` |
 </details>
 
 [Learn more](sql-scalar.md#numeric-functions)

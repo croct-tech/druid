@@ -23,8 +23,8 @@ import com.google.common.primitives.Longs;
 import org.apache.druid.java.util.common.collect.Utils;
 import org.apache.druid.segment.selector.settable.SettableLongColumnValueSelector;
 import org.apache.druid.testing.InitializedNullHandlingTest;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -33,6 +33,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -76,6 +77,21 @@ public class MergingRowIteratorTest extends InitializedNullHandlingTest
     for (int i1 = 0; i1 < possibleSequences.size(); i1++) {
       for (int i2 = i1; i2 < possibleSequences.size(); i2++) {
         for (int i3 = i2; i3 < possibleSequences.size(); i3++) {
+          testMergeOrder(possibleSequences.get(i1), possibleSequences.get(i2), possibleSequences.get(i3));
+        }
+      }
+    }
+  }
+
+  @Test
+  public void testMarkHandlingAcrossAllPossible4ElementSequences()
+  {
+    // Keep systematic coverage of mark handling across different heap layouts while limiting its cross-product.
+    List<List<Long>> possibleSequences = new ArrayList<>();
+    populateSequences(possibleSequences, new ArrayDeque<>(), 1, 6, 4);
+    for (int i1 = 0; i1 < possibleSequences.size(); i1++) {
+      for (int i2 = i1; i2 < possibleSequences.size(); i2++) {
+        for (int i3 = i2; i3 < possibleSequences.size(); i3++) {
           testMerge(possibleSequences.get(i1), possibleSequences.get(i2), possibleSequences.get(i3));
         }
       }
@@ -104,38 +120,54 @@ public class MergingRowIteratorTest extends InitializedNullHandlingTest
   @SafeVarargs
   private static void testMerge(List<Long>... timestampSequences)
   {
-    String message = Stream.of(timestampSequences).map(List::toString).collect(Collectors.joining(" "));
-    int totalLength = Stream.of(timestampSequences).mapToInt(List::size).sum();
+    final Supplier<String> failureMessage
+        = () -> Stream.of(timestampSequences).map(List::toString).collect(Collectors.joining(" "));
+    final int totalLength = Stream.of(timestampSequences).mapToInt(List::size).sum();
+    // The expected merge order does not depend on markIteration. Materialize it once per sequence
+    // triple so each mark iteration can focus on rebuilding the production iterator and testing mark handling.
+    List<Long> expectedTimestamps = new ArrayList<>();
+    Iterator<Long> expectedTimestampIterator = Utils.mergeSorted(
+        Stream.of(timestampSequences).map(List::iterator).collect(Collectors.toList()),
+        Comparator.naturalOrder()
+    );
+    while (expectedTimestampIterator.hasNext()) {
+      expectedTimestamps.add(expectedTimestampIterator.next());
+    }
     for (int markIteration = 0; markIteration < totalLength; markIteration++) {
-      testMerge(message, markIteration, timestampSequences);
+      testMerge(failureMessage, markIteration, expectedTimestamps, timestampSequences);
     }
   }
 
   @SafeVarargs
-  private static void testMerge(String message, int markIteration, List<Long>... timestampSequences)
+  private static void testMerge(
+      Supplier<String> failureMessage,
+      int markIteration,
+      List<Long> expectedTimestamps,
+      List<Long>... timestampSequences
+  )
   {
     try (MergingRowIterator mergingRowIterator = new MergingRowIterator(
         Stream.of(timestampSequences).map(TestRowIterator::new).collect(Collectors.toList())
     )) {
-      Iterator<Long> mergedTimestamps = Utils.mergeSorted(
-          Stream.of(timestampSequences).map(List::iterator).collect(Collectors.toList()),
-          Comparator.naturalOrder()
-      );
       long markedTimestamp = 0;
       long currentTimestamp = 0;
       int i = 0;
       boolean marked = false;
       boolean iterated = false;
-      while (mergedTimestamps.hasNext()) {
-        currentTimestamp = mergedTimestamps.next();
-        Assert.assertTrue(message, mergingRowIterator.moveToNext());
+      for (Long expectedTimestamp : expectedTimestamps) {
+        currentTimestamp = expectedTimestamp;
+        Assertions.assertTrue(mergingRowIterator.moveToNext(), failureMessage);
         iterated = true;
-        Assert.assertEquals(message, currentTimestamp, mergingRowIterator.getPointer().timestampSelector.getLong());
+        Assertions.assertEquals(
+            currentTimestamp,
+            mergingRowIterator.getPointer().timestampSelector.getLong(),
+            failureMessage
+        );
         if (marked) {
-          Assert.assertEquals(
-              message,
+          Assertions.assertEquals(
               markedTimestamp != currentTimestamp,
-              mergingRowIterator.hasTimeAndDimsChangedSinceMark()
+              mergingRowIterator.hasTimeAndDimsChangedSinceMark(),
+              failureMessage
           );
         }
         if (i == markIteration) {
@@ -145,9 +177,55 @@ public class MergingRowIteratorTest extends InitializedNullHandlingTest
         }
         i++;
       }
-      Assert.assertFalse(message, mergingRowIterator.moveToNext());
+      Assertions.assertFalse(mergingRowIterator.moveToNext(), failureMessage);
       if (iterated) {
-        Assert.assertEquals(message, currentTimestamp, mergingRowIterator.getPointer().timestampSelector.getLong());
+        Assertions.assertEquals(
+            currentTimestamp,
+            mergingRowIterator.getPointer().timestampSelector.getLong(),
+            failureMessage
+        );
+      }
+    }
+  }
+
+  @SafeVarargs
+  private static void testMergeOrder(List<Long>... timestampSequences)
+  {
+    final Supplier<String> failureMessage
+        = () -> Stream.of(timestampSequences).map(List::toString).collect(Collectors.joining(" "));
+    try (MergingRowIterator mergingRowIterator = new MergingRowIterator(
+        Stream.of(timestampSequences).map(TestRowIterator::new).collect(Collectors.toList())
+    )) {
+      final Iterator<Long> expectedTimestamps = Utils.mergeSorted(
+          Stream.of(timestampSequences).map(List::iterator).collect(Collectors.toList()),
+          Comparator.naturalOrder()
+      );
+      long currentTimestamp = 0;
+      boolean iterated = false;
+      while (expectedTimestamps.hasNext()) {
+        final long expectedTimestamp = expectedTimestamps.next();
+        Assertions.assertTrue(
+            mergingRowIterator.moveToNext(),
+            failureMessage
+        );
+        Assertions.assertEquals(
+            expectedTimestamp,
+            mergingRowIterator.getPointer().timestampSelector.getLong(),
+            failureMessage
+        );
+        currentTimestamp = expectedTimestamp;
+        iterated = true;
+      }
+      Assertions.assertFalse(
+          mergingRowIterator.moveToNext(),
+          failureMessage
+      );
+      if (iterated) {
+        Assertions.assertEquals(
+            currentTimestamp,
+            mergingRowIterator.getPointer().timestampSelector.getLong(),
+            failureMessage
+        );
       }
     }
   }

@@ -16,18 +16,17 @@
  * limitations under the License.
  */
 
-import { Button, Icon, Intent, Menu, MenuDivider, MenuItem, Popover } from '@blueprintjs/core';
+import { Button, Icon, Intent, Menu, MenuDivider, MenuItem, PopoverNext } from '@blueprintjs/core';
 import { type IconName, IconNames } from '@blueprintjs/icons';
 import classNames from 'classnames';
-import copy from 'copy-to-clipboard';
 import React, { useState } from 'react';
 import { useStore } from 'zustand';
 
 import { Loader } from '../../../components';
-import type { DartQueryEntry } from '../../../druid-models';
+import { compareForDisplay, type DartQueryEntry } from '../../../druid-models';
 import { useClock, useInterval, useQueryManager } from '../../../hooks';
 import { Api, AppToaster } from '../../../singletons';
-import { formatDuration, prettyFormatIsoDate } from '../../../utils';
+import { copyToClipboard, formatDuration, prettyFormatIsoDate } from '../../../utils';
 import { CancelQueryDialog } from '../cancel-query-dialog/cancel-query-dialog';
 import { getMsqDartVersion, WORK_STATE_STORE } from '../work-state-store';
 
@@ -65,9 +64,10 @@ export const CurrentDartPanel = React.memo(function CurrentViberPanel(
   const [dartQueryEntriesState, queryManager] = useQueryManager<number, DartQueryEntry[]>({
     query: useStore(WORK_STATE_STORE, getMsqDartVersion),
     processQuery: async (_, signal) => {
-      return (
-        await Api.instance.get('/druid/v2/sql/queries?includeComplete', { signal })
-      ).data.queries.reverse() as DartQueryEntry[];
+      const queries = (await Api.instance.get('/druid/v2/sql/queries?includeComplete', { signal }))
+        .data.queries as DartQueryEntry[];
+      queries.sort(compareForDisplay);
+      return queries;
     },
   });
 
@@ -82,7 +82,12 @@ export const CurrentDartPanel = React.memo(function CurrentViberPanel(
     <div className="current-dart-panel">
       <div className="title">
         Current Dart queries
-        <Button className="close-button" icon={IconNames.CROSS} minimal onClick={onClose} />
+        <Button
+          className="close-button"
+          icon={IconNames.CROSS}
+          variant="minimal"
+          onClick={onClose}
+        />
       </div>
       {dartQueryEntries ? (
         <div className="work-entries">
@@ -100,7 +105,7 @@ export const CurrentDartPanel = React.memo(function CurrentViberPanel(
                   icon={IconNames.DUPLICATE}
                   text="Copy SQL ID"
                   onClick={() => {
-                    copy(w.sqlQueryId, { format: 'text/plain' });
+                    copyToClipboard(w.sqlQueryId);
                     AppToaster.show({
                       message: `${w.sqlQueryId} copied to clipboard`,
                       intent: Intent.SUCCESS,
@@ -111,20 +116,35 @@ export const CurrentDartPanel = React.memo(function CurrentViberPanel(
                   icon={IconNames.DUPLICATE}
                   text="Copy Dart ID"
                   onClick={() => {
-                    copy(w.dartQueryId, { format: 'text/plain' });
+                    copyToClipboard(w.dartQueryId);
                     AppToaster.show({
                       message: `${w.dartQueryId} copied to clipboard`,
                       intent: Intent.SUCCESS,
                     });
                   }}
                 />
-                <MenuDivider />
                 <MenuItem
-                  icon={IconNames.CROSS}
-                  text="Cancel query"
-                  intent={Intent.DANGER}
-                  onClick={() => setConfirmCancelId(w.sqlQueryId)}
+                  icon={IconNames.DUPLICATE}
+                  text="Copy Identity"
+                  onClick={() => {
+                    copyToClipboard(w.identity);
+                    AppToaster.show({
+                      message: `${w.identity} copied to clipboard`,
+                      intent: Intent.SUCCESS,
+                    });
+                  }}
                 />
+                {(w.state === 'ACCEPTED' || w.state === 'RUNNING') && (
+                  <>
+                    <MenuDivider />
+                    <MenuItem
+                      icon={IconNames.CROSS}
+                      text="Cancel query"
+                      intent={Intent.DANGER}
+                      onClick={() => setConfirmCancelId(w.sqlQueryId)}
+                    />
+                  </>
+                )}
               </Menu>
             );
 
@@ -133,7 +153,14 @@ export const CurrentDartPanel = React.memo(function CurrentViberPanel(
             const [icon, color] = stateToIconAndColor(w.state);
             const anonymous = w.identity === 'allowAll' && w.authenticator === 'allowAll';
             return (
-              <Popover className="work-entry" key={w.sqlQueryId} position="left" content={menu}>
+              <PopoverNext
+                className="work-entry"
+                key={w.sqlQueryId}
+                placement="left"
+                content={menu}
+                lazy
+                shouldReturnFocusOnClose={false}
+              >
                 <div onDoubleClick={() => onExecutionDetails(w.sqlQueryId)}>
                   <div
                     className="line1"
@@ -162,7 +189,7 @@ export const CurrentDartPanel = React.memo(function CurrentViberPanel(
                     </div>
                   </div>
                 </div>
-              </Popover>
+              </PopoverNext>
             );
           })}
         </div>
@@ -176,18 +203,22 @@ export const CurrentDartPanel = React.memo(function CurrentViberPanel(
             if (!confirmCancelId) return;
             try {
               await Api.instance.delete(`/druid/v2/sql/${Api.encodePath(confirmCancelId)}`);
-
-              AppToaster.show({
-                message: 'Query canceled',
-                intent: Intent.SUCCESS,
-              });
-              queryManager.rerunLastQuery();
-            } catch {
-              AppToaster.show({
-                message: 'Could not cancel query',
-                intent: Intent.DANGER,
-              });
+            } catch (e: any) {
+              if (e.response?.status === 404) {
+                // Query may have already completed or been canceled, which is fine.
+              } else {
+                AppToaster.show({
+                  message: 'Could not cancel query',
+                  intent: Intent.DANGER,
+                });
+                return;
+              }
             }
+            AppToaster.show({
+              message: 'Query canceled or no longer running',
+              intent: Intent.SUCCESS,
+            });
+            queryManager.rerunLastQuery();
           }}
           onDismiss={() => setConfirmCancelId(undefined)}
         />

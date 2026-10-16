@@ -28,7 +28,10 @@ import com.google.inject.Inject;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Provides;
+import com.google.inject.multibindings.ProvidesIntoSet;
+import com.google.inject.name.Named;
 import org.apache.druid.discovery.DruidNodeDiscoveryProvider;
+import org.apache.druid.discovery.DruidService;
 import org.apache.druid.discovery.NodeRole;
 import org.apache.druid.guice.Jerseys;
 import org.apache.druid.guice.JsonConfigProvider;
@@ -53,14 +56,16 @@ import org.apache.druid.msq.dart.controller.http.DartQueryInfo;
 import org.apache.druid.msq.dart.controller.messages.ControllerMessage;
 import org.apache.druid.msq.dart.controller.sql.DartSqlEngine;
 import org.apache.druid.msq.dart.worker.DartDataServerQueryHandlerFactory;
+import org.apache.druid.msq.dart.worker.DartSegmentsInputSliceReaderProvider;
 import org.apache.druid.msq.dart.worker.DartWorkerContextFactory;
 import org.apache.druid.msq.dart.worker.DartWorkerContextFactoryImpl;
 import org.apache.druid.msq.dart.worker.DartWorkerRunner;
+import org.apache.druid.msq.dart.worker.DartWorkerService;
 import org.apache.druid.msq.dart.worker.http.DartWorkerResource;
 import org.apache.druid.msq.exec.MemoryIntrospector;
+import org.apache.druid.msq.guice.MSQBinders;
 import org.apache.druid.msq.rpc.ResourcePermissionMapper;
 import org.apache.druid.query.DruidProcessingConfig;
-import org.apache.druid.query.QueryToolChestWarehouse;
 import org.apache.druid.rpc.ServiceClientFactory;
 import org.apache.druid.server.DruidNode;
 import org.apache.druid.server.security.AuthorizerMapper;
@@ -77,8 +82,13 @@ import java.util.concurrent.ExecutorService;
 @LoadScope(roles = NodeRole.HISTORICAL_JSON_NAME)
 public class DartWorkerModule implements DruidModule
 {
-  @Inject
   private Properties properties;
+
+  @Inject
+  public void setProperties(Properties properties)
+  {
+    this.properties = properties;
+  }
 
   @Override
   public void configure(Binder binder)
@@ -105,6 +115,24 @@ public class DartWorkerModule implements DruidModule
       binder.bind(ResourcePermissionMapper.class)
             .annotatedWith(Dart.class)
             .to(DartResourcePermissionMapper.class);
+
+      MSQBinders.inputSliceReaderProviderBinder(binder, Dart.class)
+                .addBinding()
+                .to(DartSegmentsInputSliceReaderProvider.class)
+                .in(LazySingleton.class);
+    }
+
+    /**
+     * Advertise {@link DartWorkerService} in node discovery. Contributed from {@link ActualModule}, which is only
+     * installed when Dart is enabled, so advertisement tracks actually running a Dart worker. Merges into the same
+     * {@code @Named("historical")} service set announced by
+     * {@link org.apache.druid.guice.HistoricalServiceModule}.
+     */
+    @ProvidesIntoSet
+    @Named(NodeRole.HISTORICAL_JSON_NAME)
+    public Class<? extends DruidService> getDartWorkerService()
+    {
+      return DartWorkerService.class;
     }
 
     @Provides
@@ -159,14 +187,12 @@ public class DartWorkerModule implements DruidModule
     @Provides
     public DartDataServerQueryHandlerFactory createDataServerQueryHandlerFactory(
         @EscalatedGlobal ServiceClientFactory serviceClientFactory,
-        @Smile ObjectMapper smileMapper,
-        QueryToolChestWarehouse queryToolChestWarehouse
+        @Smile ObjectMapper smileMapper
     )
     {
       return new DartDataServerQueryHandlerFactory(
           serviceClientFactory,
-          smileMapper,
-          queryToolChestWarehouse
+          smileMapper
       );
     }
   }

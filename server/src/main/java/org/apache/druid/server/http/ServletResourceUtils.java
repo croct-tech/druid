@@ -21,18 +21,21 @@ package org.apache.druid.server.http;
 
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.error.ErrorResponse;
 import org.apache.druid.error.InternalServerError;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.rpc.HttpResponseException;
-import org.jboss.netty.handler.codec.http.HttpResponseStatus;
 
 import javax.annotation.Nullable;
+import javax.servlet.AsyncEvent;
+import javax.servlet.AsyncListener;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public class ServletResourceUtils
@@ -111,5 +114,41 @@ public class ServletResourceUtils
     }
 
     throw new RuntimeException(e);
+  }
+
+  /**
+   * Creates an {@link AsyncListener} which performs the given action on the event
+   * in case of a {@link AsyncListener#onTimeout}. The other actions performed
+   * by the listener viz. {@link AsyncListener#onStartAsync}, {@link AsyncListener#onComplete}
+   * and {@link AsyncListener#onError} are noop.
+   */
+  public static AsyncListener createAsyncTimeoutListener(Consumer<AsyncEvent> onTimeoutHandler)
+  {
+    return new AsyncListener()
+    {
+      @Override
+      public void onComplete(AsyncEvent asyncEvent)
+      {
+        // do nothing
+      }
+
+      @Override
+      public void onTimeout(AsyncEvent asyncEvent)
+      {
+        onTimeoutHandler.accept(asyncEvent);
+      }
+
+      @Override
+      public void onError(AsyncEvent asyncEvent)
+      {
+        // do nothing
+      }
+
+      @Override
+      public void onStartAsync(AsyncEvent asyncEvent)
+      {
+        // do nothing
+      }
+    };
   }
 }
