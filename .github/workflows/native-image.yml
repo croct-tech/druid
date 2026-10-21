@@ -80,7 +80,9 @@ jobs:
       # The image is kept for a few days so that it can be tried locally (docker load < druid-native-image.tar.gz)
       # before the pull request is merged, and so that it survives a failure of the steps below.
       - name: Save the native image
-        run: docker save druid:native | gzip -1 > "$RUNNER_TEMP/druid-native-image.tar.gz"
+        run: |
+          set -o pipefail
+          docker save druid:native | gzip -1 > "$RUNNER_TEMP/druid-native-image.tar.gz"
 
       - name: Upload the native image
         uses: actions/upload-artifact@v7

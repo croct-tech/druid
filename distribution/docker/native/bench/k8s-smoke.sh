@@ -42,7 +42,13 @@ log() {
   echo "$(date -u +%H:%M:%S) $*" >&2
 }
 
+FOLLOWER_PIDS=()
+
 cleanup() {
+  local pid
+  for pid in "${FOLLOWER_PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
   if [ "${K8S_SMOKE_KEEP:-0}" != 1 ]; then
     docker rm -f "$NAME" > /dev/null 2>&1 || true
     rm -rf "$WORK"
@@ -221,6 +227,7 @@ follow_new_peons() {
           sleep 2
         done
       ) &
+      FOLLOWER_PIDS+=($!)
     fi
   done
 }
@@ -228,13 +235,13 @@ follow_new_peons() {
 print_peon_logs() {
   local file
   for file in "$WORK"/peon-*.log; do
-    [ -f "$file" ] || continue
+    [ -s "$file" ] || continue
     echo
     echo "Peon pod log ($(basename "$file" .log | sed 's/^peon-//'), errors):"
-    grep -E "ERROR|Exception|Caused by|FAILED|status" "$file" | grep -v -E "^\s+at " | head -40
+    { grep -E "ERROR|Exception|Caused by|FAILED|status" "$file" | grep -v -E "^\s+at " | head -40; } || true
     echo
     echo "Peon pod log ($(basename "$file" .log | sed 's/^peon-//'), tail):"
-    grep -v -E "^\s+at " "$file" | tail -40
+    { grep -v -E "^\s+at " "$file" | tail -40; } || true
   done
 }
 

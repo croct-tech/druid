@@ -117,6 +117,13 @@ public final class NativeImageBuildTool
    */
   private static final Pattern BUILD_TIME_INIT = Pattern.compile("--initialize-at-build-time=");
 
+  /**
+   * A build-time initialization option with its class list, which may continue over several (joined) lines with a
+   * comma after each class.
+   */
+  private static final Pattern BUILD_TIME_INIT_OPTION =
+      Pattern.compile("--initialize-at-build-time=[^\\s,]*(?:\\s*,\\s*[^\\s,]+)*");
+
   private NativeImageBuildTool()
   {
   }
@@ -258,12 +265,13 @@ public final class NativeImageBuildTool
   }
 
   /**
-   * Copies a jar, leaving out native-image.properties entries that request build-time initialization. Returns the
-   * names of the entries left out.
+   * Copies a jar, removing the build-time initialization requests from its native-image.properties entries while
+   * keeping their other options (run-time initialization requests in particular). Returns the names of the entries
+   * rewritten.
    */
   private static List<String> copyWithoutBuildTimeInit(Path source, Path target) throws IOException
   {
-    final List<String> toStrip = new ArrayList<>();
+    final Map<String, byte[]> rewritten = new HashMap<>();
     try (JarFile jarFile = new JarFile(source.toFile())) {
       final Enumeration<JarEntry> entries = jarFile.entries();
       while (entries.hasMoreElements()) {
@@ -271,14 +279,14 @@ public final class NativeImageBuildTool
         if (entry.getName().startsWith("META-INF/native-image/") && entry.getName().endsWith("native-image.properties")) {
           final String content = new String(jarFile.getInputStream(entry).readAllBytes(), StandardCharsets.UTF_8);
           if (BUILD_TIME_INIT.matcher(content).find()) {
-            toStrip.add(entry.getName());
+            rewritten.put(entry.getName(), withoutBuildTimeInit(content).getBytes(StandardCharsets.UTF_8));
           }
         }
       }
     }
-    if (toStrip.isEmpty()) {
+    if (rewritten.isEmpty()) {
       Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
-      return toStrip;
+      return new ArrayList<>();
     }
     try (JarInputStream in = new JarInputStream(Files.newInputStream(source));
          JarOutputStream out = in.getManifest() == null
@@ -286,15 +294,28 @@ public final class NativeImageBuildTool
                                : new JarOutputStream(Files.newOutputStream(target), in.getManifest())) {
       JarEntry entry;
       while ((entry = in.getNextJarEntry()) != null) {
-        if (toStrip.contains(entry.getName())) {
-          continue;
-        }
         out.putNextEntry(new JarEntry(entry.getName()));
-        in.transferTo(out);
+        final byte[] replacement = rewritten.get(entry.getName());
+        if (replacement != null) {
+          out.write(replacement);
+        } else {
+          in.transferTo(out);
+        }
         out.closeEntry();
       }
     }
-    return toStrip;
+    return new ArrayList<>(rewritten.keySet());
+  }
+
+  /**
+   * Joins the continuation lines of a properties file the way {@link java.util.Properties} does (the leading
+   * whitespace of a continuation line is dropped, so a class list split after a comma stays one option) and removes
+   * the build-time initialization options.
+   */
+  static String withoutBuildTimeInit(String content)
+  {
+    final String joined = content.replaceAll("\\\\\\r?\\n[ \\t]*", "");
+    return BUILD_TIME_INIT_OPTION.matcher(joined).replaceAll(" ");
   }
 
   private static Set<String> classEntries(Path jar) throws IOException
