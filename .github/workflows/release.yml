@@ -16,6 +16,14 @@
 name: "Release"
 on:
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Image reported to the deployment service: the GraalVM native image or the JVM image"
+        type: choice
+        options:
+          - native
+          - jvm
+        default: native
 
 concurrency:
   group: ${{ github.workflow }}
@@ -29,7 +37,8 @@ jobs:
     name: "Release"
     # Release versions are only unique along master (docs/adr/0003-fork-release-versions.md).
     if: github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    # The native image build needs far more than the 16 GB of a standard runner (docs/adr/0004-graalvm-native-image.md).
+    runs-on: croct-custom-32
     permissions:
       contents: write
       id-token: write
@@ -82,7 +91,7 @@ jobs:
             echo "::notice ::Release $VERSION already exists, reusing it"
           else
             gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" \
-              --notes "Upstream \`master\` at apache/druid@$UPSTREAM (latest included release: $RELEASE) plus $COMMITS fork commits. Image: \`$IMAGE:$VERSION\`."
+              --notes "Upstream \`master\` at apache/druid@$UPSTREAM (latest included release: $RELEASE) plus $COMMITS fork commits. Images: \`$IMAGE:$VERSION\` (JVM) and \`$IMAGE:$VERSION-native\` (GraalVM native image)."
           fi
 
       - name: Setup Java
@@ -109,6 +118,17 @@ jobs:
             -t "$IMAGE:$VERSION" \
             -f distribution/docker/Dockerfile .
 
+      # Same distribution tarball, compiled to a GraalVM native image (docs/adr/0004-graalvm-native-image.md). The
+      # builder stage is identical to the JVM Dockerfile's, so its layers come from the cache.
+      - name: Build the native Docker image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          DOCKER_BUILDKIT=1 docker build \
+            --build-arg BUILD_FROM_SOURCE=false \
+            -t "$IMAGE:$VERSION-native" \
+            -f distribution/docker/Dockerfile.native .
+
       # Authenticate only after the image is built: this writes a credentials file into the
       # workspace, which the Dockerfile copies into its builder stage.
       - name: Authenticate to Google Cloud
@@ -120,17 +140,18 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v3
 
-      - name: Push the Docker image
+      - name: Push the Docker images
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           gcloud auth configure-docker us-docker.pkg.dev --quiet
           docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:$VERSION-native"
 
       - name: Report the new image
         env:
           UPDATE_ENDPOINT: ${{ secrets.UPDATE_ENDPOINT }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}${{ inputs.deploy == 'native' && '-native' || '' }}
         run: |
           token=$(gcloud auth print-access-token)
           curl --fail-with-body --silent --show-error -X POST "$UPDATE_ENDPOINT" \

@@ -326,6 +326,7 @@ public class CalcitePlanner implements Planner, ViewExpander
         Objects.requireNonNull(planner, "planner"),
         rexBuilder
     );
+    CalciteMetadataQueries.configure(cluster);
     final SqlToRelConverter.Config config =
         sqlToRelConverterConfig.withTrimUnusedFields(false)
                                .withHintStrategyTable(DruidHint.HINT_STRATEGY_TABLE)
@@ -406,6 +407,7 @@ public class CalcitePlanner implements Planner, ViewExpander
 
     final RexBuilder rexBuilder = createRexBuilder();
     final RelOptCluster cluster = RelOptCluster.create(planner, rexBuilder);
+    CalciteMetadataQueries.configure(cluster);
     final SqlToRelConverter.Config config =
         sqlToRelConverterConfig.withTrimUnusedFields(false)
                                .withTopDownGeneralDecorrelationEnabled(

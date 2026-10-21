@@ -1,0 +1,123 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Builds the GraalVM native image (docs/adr/0004-graalvm-native-image.md), runs the benchmark workload against it
+# and against the JVM image built from the same distribution, and smoke-tests the Kubernetes task runner. The reports
+# land in the job summary. The build needs far more memory than a standard runner has, so this only runs for changes
+# to the native build itself; run it by hand for anything else.
+name: "Native image"
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - ".github/workflows/native-image.yml"
+      - "distribution/docker/**"
+      - "processing/src/main/java/org/apache/druid/guice/PropertiesModule.java"
+      - "sql/src/main/java/org/apache/calcite/**"
+      - "sql/src/main/java/org/apache/druid/sql/calcite/planner/**"
+  workflow_dispatch:
+    inputs:
+      native_image_opts:
+        description: "Extra native-image options (the NATIVE_IMAGE_OPTS build argument)"
+        type: string
+        default: ""
+
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.head_ref || github.run_id }}'
+  cancel-in-progress: true
+
+jobs:
+  native-image:
+    name: "Build, benchmark and smoke-test"
+    # 32 cores and 128 GB of memory. The native-image analysis of Druid plus its extensions does not fit in 16 GB.
+    runs-on: croct-custom-32
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: 25
+          cache: 'maven'
+
+      - name: Build the Druid distribution
+        # Same build as the release workflow: the tarball both Dockerfiles consume, web console included.
+        run: ./mvnw -B -T1C clean install -pl '!benchmarks' -Pdist,bundle-contrib-exts,skip-static-checks,skip-tests
+
+      - name: Build the JVM Docker image
+        run: |
+          DOCKER_BUILDKIT=1 docker build \
+            --build-arg BUILD_FROM_SOURCE=false \
+            -t druid:jvm \
+            -f distribution/docker/Dockerfile .
+
+      - name: Build the native Docker image
+        env:
+          NATIVE_IMAGE_OPTS: ${{ inputs.native_image_opts }}
+        # Plain progress so that the native-image build output (phases, memory, warnings) is in the log.
+        run: |
+          DOCKER_BUILDKIT=1 docker build --progress=plain \
+            --build-arg BUILD_FROM_SOURCE=false \
+            --build-arg "NATIVE_IMAGE_OPTS=$NATIVE_IMAGE_OPTS" \
+            -t druid:native \
+            -f distribution/docker/Dockerfile.native .
+          docker image ls druid
+
+      # The image is kept for a few days so that it can be tried locally (docker load < druid-native-image.tar.gz)
+      # before the pull request is merged, and so that it survives a failure of the steps below.
+      - name: Save the native image
+        run: |
+          set -o pipefail
+          docker save druid:native | gzip -1 > "$RUNNER_TEMP/druid-native-image.tar.gz"
+
+      - name: Upload the native image
+        uses: actions/upload-artifact@v7
+        with:
+          name: druid-native-image
+          path: ${{ runner.temp }}/druid-native-image.tar.gz
+          retention-days: 3
+          compression-level: 0
+
+      - name: Benchmark the native image
+        timeout-minutes: 45
+        run: distribution/docker/native/bench/benchmark.sh druid:native native "$RUNNER_TEMP/bench"
+
+      - name: Smoke-test the Kubernetes task runner
+        timeout-minutes: 30
+        run: distribution/docker/native/bench/k8s-smoke.sh druid:native
+
+      - name: Benchmark the JVM image
+        timeout-minutes: 45
+        run: distribution/docker/native/bench/benchmark.sh druid:jvm jvm "$RUNNER_TEMP/bench"
+
+      - name: Publish the reports
+        if: ${{ !cancelled() }}
+        run: |
+          for label in native jvm; do
+            if [ -f "$RUNNER_TEMP/bench/$label.md" ]; then
+              cat "$RUNNER_TEMP/bench/$label.md" >> "$GITHUB_STEP_SUMMARY"
+              echo >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Upload the reports and logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-image-benchmark
+          path: ${{ runner.temp }}/bench
+          if-no-files-found: ignore

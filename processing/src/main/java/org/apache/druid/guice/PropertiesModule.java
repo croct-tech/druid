@@ -19,6 +19,7 @@
 
 package org.apache.druid.guice;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import org.apache.druid.java.util.common.logger.Logger;
@@ -74,21 +75,39 @@ public class PropertiesModule implements Module
     binder.bind(Properties.class).toInstance(props);
   }
 
+  /**
+   * Opens a properties file, looking first on the system class path, then in the working directory (or at the path
+   * given by {@code druid.properties.file}) and finally in each directory listed in {@code java.class.path}.
+   * <p>
+   * On a JVM the last step never finds anything new, because the system class loader already serves those
+   * directories. It matters for a GraalVM native image, whose system class loader only sees the resources baked
+   * into the binary: there the configuration directories are only reachable through the {@code java.class.path}
+   * property, which the native launcher sets from its {@code -cp} argument.
+   */
   @Nullable
-  private static InputStream openPropertiesFile(final String propertiesFile, final Properties systemProps)
+  @VisibleForTesting
+  static InputStream openPropertiesFile(final String propertiesFile, final Properties systemProps)
       throws IOException
   {
     final InputStream stream = ClassLoader.getSystemResourceAsStream(propertiesFile);
 
     if (stream != null) {
       return stream;
-    } else {
-      File workingDirectoryFile = new File(systemProps.getProperty("druid.properties.file", propertiesFile));
-      if (workingDirectoryFile.exists()) {
-        return new BufferedInputStream(new FileInputStream(workingDirectoryFile));
-      } else {
-        return null;
+    }
+
+    final File workingDirectoryFile = new File(systemProps.getProperty("druid.properties.file", propertiesFile));
+    if (workingDirectoryFile.exists()) {
+      return new BufferedInputStream(new FileInputStream(workingDirectoryFile));
+    }
+
+    final String classPath = systemProps.getProperty("java.class.path", "");
+    for (String entry : classPath.split(File.pathSeparator)) {
+      final File classPathFile = new File(entry, propertiesFile);
+      if (!entry.isEmpty() && classPathFile.isFile()) {
+        return new BufferedInputStream(new FileInputStream(classPathFile));
       }
     }
+
+    return null;
   }
 }
