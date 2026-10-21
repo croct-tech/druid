@@ -254,7 +254,7 @@ druid.service=druid/middleManager
 druid.plaintextPort=8091
 druid.emitter.prometheus.port=9091
 druid.worker.capacity=1
-druid.indexer.runner.javaOptsArray=["-Xmx512m","-XX:MaxDirectMemorySize=512m","-Duser.timezone=UTC","-Dfile.encoding=UTF-8","-Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager","-Ddruid.sql.calcite.runtimeCodeGeneration=false"$PEON_AGENT_OPT]
+druid.indexer.runner.javaOptsArray=["-Xmx512m","-XX:MaxDirectMemorySize=512m","-Duser.timezone=UTC","-Dfile.encoding=UTF-8","-Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager","-Ddruid.sql.calcite.runtimeCodeGeneration=false","-Dguice_bytecode_gen_option=DISABLED","-DfakeSpecialize=true"$PEON_AGENT_OPT]
 druid.indexer.task.baseTaskDir=$VAR/task
 druid.indexer.fork.property.druid.processing.buffer.sizeBytes=25000000
 druid.indexer.fork.property.druid.processing.numMergeBuffers=2
@@ -303,6 +303,9 @@ start_zookeeper() {
   exit 1
 }
 
+# Every JVM runs with the switches the native launcher (run-java) sets, so that it takes the same code paths the
+# native binary will: no Calcite code generation, Guice constructing and injecting through reflection instead of
+# generated classes (which is what the agent must record), and no query specialization.
 start_service() {
   local service="$1"
   local heap="$2"
@@ -320,6 +323,8 @@ start_service() {
       -Djava.util.logging.manager=org.apache.logging.log4j.jul.LogManager \
       -Ddruid.node.type="$service" \
       -Ddruid.sql.calcite.runtimeCodeGeneration=false \
+      -Dguice_bytecode_gen_option=DISABLED \
+      -DfakeSpecialize=true \
       --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED \
       --add-exports=java.base/jdk.internal.ref=ALL-UNNAMED \
       --add-opens=java.base/java.nio=ALL-UNNAMED \

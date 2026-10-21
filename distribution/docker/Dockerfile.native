@@ -99,6 +99,7 @@ RUN java -cp "$(ls /opt/druid/lib/asm-*.jar | head -1)" build/NativeImageBuildTo
 # 2. Reflection and resource metadata derived from the class path itself: every Druid class (Jackson, Guice and
 #    Jersey all reach them reflectively), every service provider, and the libraries known to load classes by name.
 #    Libraries that only instantiate classes by name get constructors and fields, which keeps the image small.
+#    Guice injection points (Inject constructors, methods and fields, Provides methods) are registered in every jar.
 #    airline builds the command line (its own commands, such as help, are instantiated reflectively) and log4j
 #    configures its plugins through annotated factory methods and builder fields, for whichever appenders a
 #    log4j2.xml names, so both are registered in full rather than from the recording.

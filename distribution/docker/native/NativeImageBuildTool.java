@@ -75,7 +75,9 @@ import java.util.stream.Stream;
  *     registered for every service provider named in a META-INF/services file, for every class in a package with one
  *     of the --reflect-package prefixes, and for every class in a jar whose file name starts with one of the
  *     --reflect-jar prefixes. Classes in a --reflect-package-constructors package only get their constructors:
- *     enough for libraries that instantiate classes by name. Methods and fields are registered only where they can be
+ *     enough for libraries that instantiate classes by name. In every other class, members that Guice reaches
+ *     reflectively are registered: constructors, methods and fields annotated with Inject, and Provides methods.
+ *     Methods and fields are registered only where they can be
  *     reached reflectively: methods on classes that carry any annotation (Jackson, Guice, JAX-RS, lifecycle and
  *     validation annotations all mean members are called reflectively; service providers always get their methods),
  *     fields on classes that declare an annotated field, plus everything in --reflect-methods and --reflect-fields
@@ -470,6 +472,20 @@ public final class NativeImageBuildTool
                 }
               } else if (constructorPackages.stream().anyMatch(className::startsWith)) {
                 constructorClasses.add(className);
+              } else {
+                // Guice constructs bound classes and calls injection points and provider methods reflectively (the
+                // native image runs with Guice's bytecode generation disabled), wherever the class comes from.
+                final Annotations annotations = scanAnnotations(jarFile.getInputStream(entry).readAllBytes());
+                if (annotations.injectedMethods) {
+                  reflectClasses.add(className);
+                  methodClasses.add(className);
+                } else if (annotations.injectedConstructor) {
+                  constructorClasses.add(className);
+                }
+                if (annotations.injectedFields) {
+                  reflectClasses.add(className);
+                  fieldClasses.add(className);
+                }
               }
             }
           }
@@ -512,12 +528,22 @@ public final class NativeImageBuildTool
   {
     private boolean anywhere;
     private boolean onFields;
+    private boolean injectedConstructor;
+    private boolean injectedMethods;
+    private boolean injectedFields;
   }
+
+  private static final Set<String> INJECT_ANNOTATIONS = Set.of(
+      "Lcom/google/inject/Inject;",
+      "Ljavax/inject/Inject;",
+      "Ljakarta/inject/Inject;"
+  );
+  private static final String PROVIDES_ANNOTATION = "Lcom/google/inject/Provides;";
 
   /**
    * Where the class carries annotations. Jackson, Guice, JSR-330, JAX-RS, lifecycle and validation annotations are
    * the reasons members get called, read or written reflectively; a class without any annotation is only reached
-   * through code.
+   * through code. Guice's own injection points are tracked separately, because they matter in every jar.
    */
   private static Annotations scanAnnotations(byte[] classBytes)
   {
@@ -542,6 +568,9 @@ public final class NativeImageBuildTool
               {
                 annotations.anywhere = true;
                 annotations.onFields = true;
+                if (INJECT_ANNOTATIONS.contains(annotationDescriptor)) {
+                  annotations.injectedFields = true;
+                }
                 return null;
               }
             };
@@ -562,6 +591,15 @@ public final class NativeImageBuildTool
               public AnnotationVisitor visitAnnotation(String annotationDescriptor, boolean visible)
               {
                 annotations.anywhere = true;
+                if (INJECT_ANNOTATIONS.contains(annotationDescriptor)) {
+                  if ("<init>".equals(name)) {
+                    annotations.injectedConstructor = true;
+                  } else {
+                    annotations.injectedMethods = true;
+                  }
+                } else if (PROVIDES_ANNOTATION.equals(annotationDescriptor)) {
+                  annotations.injectedMethods = true;
+                }
                 return null;
               }
 
