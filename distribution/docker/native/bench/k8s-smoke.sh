@@ -71,6 +71,10 @@ if [ "$ready" != 1 ]; then
 fi
 log "k3s is ready"
 
+# The hostPath volume shared by the services and the peons (deep storage and task logs) would otherwise be created
+# root-owned, while the image runs as uid 1000.
+docker exec -i "$NAME" sh -c 'mkdir -p /druid-shared && chown 1000:1000 /druid-shared'
+
 log "loading $IMAGE into k3s"
 docker save "$IMAGE" | docker exec -i "$NAME" ctr -n k8s.io images import - > /dev/null
 
@@ -180,6 +184,60 @@ data:
   DRUID_LOG4J: '<?xml version="1.0" encoding="UTF-8" ?><Configuration status="WARN"><Appenders><Console name="Console" target="SYSTEM_OUT"><PatternLayout pattern="%d{ISO8601} %p [%t] %c - %m%n"/></Console></Appenders><Loggers><Root level="info"><AppenderRef ref="Console"/></Root></Loggers></Configuration>'
 MANIFESTS
 
+# The native services are up within a second or two, before PostgreSQL accepts connections. Druid creates its
+# metadata tables at start-up and gives up after a few retries, so the store has to be ready first.
+log "waiting for ZooKeeper and PostgreSQL"
+for app in zookeeper postgres; do
+  "${KUBECTL[@]}" rollout status deployment/"$app" --timeout=600s > /dev/null
+done
+ready=0
+for _ in $(seq 1 90); do
+  if "${KUBECTL[@]}" exec deployment/postgres -- pg_isready -U druid > /dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 2
+done
+if [ "$ready" != 1 ]; then
+  log "PostgreSQL did not become ready"
+  "${KUBECTL[@]}" logs deployment/postgres --tail=40 >&2 || true
+  exit 1
+fi
+
+# Peon pods are short-lived; their logs are followed into $WORK as soon as they appear and printed at the end.
+declare -A FOLLOWED_PEONS=()
+follow_new_peons() {
+  local pod
+  for pod in $("${KUBECTL[@]}" get pods --no-headers -o custom-columns=:metadata.name 2>/dev/null \
+               | grep -v -E "^(coordinator|broker|historical|router|zookeeper|postgres)-"); do
+    if [ -z "${FOLLOWED_PEONS[$pod]:-}" ]; then
+      FOLLOWED_PEONS[$pod]=1
+      log "peon pod $pod appeared"
+      (
+        for _ in $(seq 1 60); do
+          if "${KUBECTL[@]}" logs -f "$pod" >> "$WORK/peon-$pod.log" 2>/dev/null; then
+            break
+          fi
+          sleep 2
+        done
+      ) &
+    fi
+  done
+}
+
+print_peon_logs() {
+  local file
+  for file in "$WORK"/peon-*.log; do
+    [ -f "$file" ] || continue
+    echo
+    echo "Peon pod log ($(basename "$file" .log | sed 's/^peon-//'), errors):"
+    grep -E "ERROR|Exception|Caused by|FAILED|status" "$file" | grep -v -E "^\s+at " | head -40
+    echo
+    echo "Peon pod log ($(basename "$file" .log | sed 's/^peon-//'), tail):"
+    grep -v -E "^\s+at " "$file" | tail -40
+  done
+}
+
 druid_service() {
   # druid_service <name> <command> <port> <nodePort> <xmx> <direct> [extra env yaml lines]
   local name="$1" command="$2" port="$3" node_port="$4" xmx="$5" direct="$6" extra="${7:-}"
@@ -275,26 +333,34 @@ log "coordinator-overlord and broker are healthy"
 "${KUBECTL[@]}" get pods -o wide
 
 log "submitting an ingestion task"
-task_id="$(curl -sS -X POST -H 'Content-Type: application/json' --data-binary '{
+response="$(curl -sS -X POST -H 'Content-Type: application/json' --data-binary '{
   "type": "index_parallel",
   "spec": {
     "ioConfig": {"type": "index_parallel", "inputSource": {"type": "inline", "data": "{\"time\":\"2015-09-12T00:46:58.771Z\",\"page\":\"Druid\",\"added\":36}\n{\"time\":\"2015-09-12T01:46:58.771Z\",\"page\":\"GraalVM\",\"added\":17}\n{\"time\":\"2015-09-12T02:46:58.771Z\",\"page\":\"Kubernetes\",\"added\":5}"}, "inputFormat": {"type": "json"}},
     "tuningConfig": {"type": "index_parallel", "partitionsSpec": {"type": "dynamic"}, "maxNumConcurrentSubTasks": 1},
     "dataSchema": {"dataSource": "k8s_smoke", "timestampSpec": {"column": "time", "format": "iso"}, "dimensionsSpec": {"dimensions": ["page"]}, "metricsSpec": [{"type": "longSum", "name": "added", "fieldName": "added"}], "granularitySpec": {"queryGranularity": "none", "rollup": true, "segmentGranularity": "day"}}
   }
-}' http://127.0.0.1:30081/druid/indexer/v1/task | sed -n 's/.*"task":"\([^"]*\)".*/\1/p')"
+}' http://127.0.0.1:30081/druid/indexer/v1/task)"
+task_id="$(printf '%s' "$response" | sed -n 's/.*"task":"\([^"]*\)".*/\1/p')"
+if [ -z "$task_id" ]; then
+  log "task submission failed: ${response:0:500}"
+  echo "Overlord log (tail):"
+  "${KUBECTL[@]}" logs deployment/coordinator --tail=60
+  exit 1
+fi
 log "task $task_id submitted"
 status=""
-for _ in $(seq 1 600); do
+for i in $(seq 1 600); do
   status="$(curl -s "http://127.0.0.1:30081/druid/indexer/v1/task/$task_id/status" | sed -n 's/.*"statusCode":"\([A-Z]*\)".*/\1/p')"
   if [ "$status" = "SUCCESS" ] || [ "$status" = "FAILED" ]; then
     break
   fi
-  if [ $(( RANDOM % 15 )) -eq 0 ]; then
-    "${KUBECTL[@]}" get pods --no-headers 2>/dev/null | grep -v -E "coordinator|broker|historical|router|zookeeper|postgres" | sed 's/^/  peon pod: /' >&2 || true
+  if [ $(( i % 3 )) -eq 1 ]; then
+    follow_new_peons
   fi
   sleep 2
 done
+follow_new_peons
 log "task $task_id finished with status [$status]"
 echo
 echo "Peon jobs created by the overlord:"
@@ -302,6 +368,8 @@ echo "Peon jobs created by the overlord:"
 echo
 echo "Task log (tail):"
 curl -s "http://127.0.0.1:30081/druid/indexer/v1/task/$task_id/log?offset=-3000" | tail -25
+sleep 3
+print_peon_logs
 echo
 if [ "$status" != "SUCCESS" ]; then
   echo "Overlord log (tail):"
