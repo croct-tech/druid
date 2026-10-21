@@ -115,6 +115,7 @@ RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java gen
       --reflect-methods org.apache.calcite.interpreter. \
       --reflect-package org.apache.calcite.avatica.remote. \
       --reflect-methods org.apache.calcite.avatica.remote. \
+      --reflect-package-constructors org.apache.calcite.adapter.enumerable. \
       --reflect-package org.apache.commons.dbcp2. \
       --reflect-methods org.apache.commons.dbcp2. \
       --reflect-package org.apache.commons.pool2. \

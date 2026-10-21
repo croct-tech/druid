@@ -63,6 +63,8 @@ trap 'rm -f "$ARGS_FILE"' EXIT
   echo "-H:+UnlockExperimentalVMOptions"
   echo "-H:+ReportExceptionStackTraces"
   echo "-H:+AddAllCharsets"
+  # Netty allocates direct buffers through Arena.ofShared on Java 25 (CleanerJava25); opt-in for native images.
+  echo "-H:+SharedArenaSupport"
   echo "-H:ConfigurationFileDirectories=$CONFIG_DIRS"
 } > "$ARGS_FILE"
 

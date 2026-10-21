@@ -65,7 +65,13 @@ deployment service; the default is the native image.
   GraalVM's serial collector, fixed at build time; `-XX:+UseG1GC` and friends are ignored. Without `-Xmx` the native
   runtime takes 80% of the container's memory for the heap, so always size the heap.
 - JavaScript (`druid.javascript.enabled`) does not work: the GraalVM JavaScript engine jars clash with the native
-  image builder and are left out. Monitors that depend on JNA (`OshiSysMonitor`) are untested.
+  image builder and are left out. Monitors that depend on JNA (`OshiSysMonitor`) are untested, and `JvmMonitor`
+  cannot report per-thread allocation (`jvm/...` allocation metrics) because the native runtime's thread MXBean lacks
+  it.
+- Start-up takes a few seconds instead of tens of seconds. That exposed a benign race in the overlord: it can win the
+  leader election before its segment metadata cache has started, log "Cache has not been started yet", surrender and
+  win again a second later. Jersey also logs a JAXB stack trace at start-up (the JAXB runtime is not included and
+  WADL generation is unavailable); the services are unaffected.
 - Expressions in `sys` and `INFORMATION_SCHEMA` queries are evaluated by Druid's expression engine in the native
   image, so an expression the planner cannot translate to a Druid expression fails there with an "unsupported" error,
   while a JVM would still evaluate it through Calcite. The same applies to aggregate functions on those tables other
