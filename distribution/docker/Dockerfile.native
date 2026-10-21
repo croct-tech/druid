@@ -218,15 +218,17 @@ COPY distribution/docker/peon.sh /peon.sh
 
 # The native binary and the launcher shim that stands in for the JVM; configuration and licenses from the
 # distribution. Each compiled-in extension gets an empty directory so that druid.extensions.loadList keeps working.
-COPY --from=builder /opt/druid/LICENSE /opt/druid/NOTICE /opt/druid/README /opt/druid/
-COPY --from=builder /opt/druid/licenses /opt/druid/licenses
-COPY --from=builder /opt/druid/conf /opt/druid/conf
-COPY --from=native-builder /opt/druid-native/bin/druid /opt/druid/bin/druid
-COPY distribution/docker/native/run-java /opt/druid/bin/run-java
+# Ownership is set while copying: a chown of the binary afterwards would duplicate its 600 MB in another layer.
+COPY --from=builder --chown=druid:druid /opt/druid/LICENSE /opt/druid/NOTICE /opt/druid/README /opt/druid/
+COPY --from=builder --chown=druid:druid /opt/druid/licenses /opt/druid/licenses
+COPY --from=builder --chown=druid:druid /opt/druid/conf /opt/druid/conf
+COPY --from=native-builder --chown=druid:druid /opt/druid-native/bin/druid /opt/druid/bin/druid
+COPY --chown=druid:druid distribution/docker/native/run-java /opt/druid/bin/run-java
 RUN --mount=type=bind,from=native-builder,source=/opt/druid-native/extensions.txt,target=/tmp/extensions.txt \
  mkdir -p /opt/druid/var /opt/druid/extensions /opt/shared \
  && for extension in $(cat /tmp/extensions.txt); do mkdir -p "/opt/druid/extensions/${extension}"; done \
- && chown -R druid:druid /opt/druid /opt/shared \
+ && chown druid:druid /opt/druid /opt/druid/bin \
+ && chown -R druid:druid /opt/druid/var /opt/druid/extensions /opt/shared \
  && chmod 775 /opt/druid/var /opt/shared
 
 USER druid
