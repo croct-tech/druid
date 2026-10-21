@@ -33,6 +33,7 @@ import org.apache.calcite.DataContext;
 import org.apache.calcite.interpreter.BindableConvention;
 import org.apache.calcite.interpreter.BindableRel;
 import org.apache.calcite.interpreter.Bindables;
+import org.apache.calcite.interpreter.DruidInterpreter;
 import org.apache.calcite.linq4j.Enumerable;
 import org.apache.calcite.linq4j.Enumerator;
 import org.apache.calcite.plan.RelOptPlanner;
@@ -340,9 +341,25 @@ public abstract class QueryHandler extends SqlStatementHandler.BaseStatementHand
           plannerContext.getParameters()
       );
       final Supplier<QueryResponse<Object[]>> resultsSupplier =
-          () -> QueryResponse.withEmptyContext(enumerate(theRel.bind(dataContext)));
+          () -> QueryResponse.withEmptyContext(enumerate(bind(theRel, dataContext, plannerContext)));
       return new PlannerResult(resultsSupplier, rootQueryRel.validatedRowType);
     }
+  }
+
+  /**
+   * Executes a Bindable plan with Calcite's interpreter, or, where Calcite cannot compile expressions with Janino at
+   * run time, with {@link DruidInterpreter} and Druid's expression engine.
+   */
+  private static Enumerable<?> bind(
+      final BindableRel rel,
+      final DataContext dataContext,
+      final PlannerContext plannerContext
+  )
+  {
+    if (RuntimeCodeGeneration.isAvailable()) {
+      return rel.bind(dataContext);
+    }
+    return new DruidInterpreter(dataContext, rel, new DruidExpressionScalarCompiler(plannerContext));
   }
 
   /**

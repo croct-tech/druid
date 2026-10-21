@@ -1,0 +1,225 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# Druid as a GraalVM native image.
+#
+# The image runs every Druid service (and the peons that middleManagers and the Kubernetes task runner spawn) from a
+# single native binary, /opt/druid/bin/druid. Extensions are compiled into that binary: pick them at build time with
+# DRUID_NATIVE_EXTENSIONS. The entrypoint, configuration layout and environment variables are the same as the JVM
+# image (distribution/docker/Dockerfile); bin/run-java is a shim that translates JVM options for the native binary.
+# See docs/adr/0004-graalvm-native-image.md.
+#
+# Build from source:
+#   DOCKER_BUILDKIT=1 docker build -f distribution/docker/Dockerfile.native -t druid:native .
+# Build from a tarball already produced by `mvn install -Pdist,bundle-contrib-exts`:
+#   DOCKER_BUILDKIT=1 docker build -f distribution/docker/Dockerfile.native --build-arg BUILD_FROM_SOURCE=false -t druid:native .
+#
+# The native-image step needs a large machine: the analysis of Druid plus its extensions does not fit in 16 GB, so
+# the builder heap defaults to 64 GB (NATIVE_IMAGE_XMX) and CI runs this build on a 32-core, 128 GB runner. The
+# recording step also starts a small Druid cluster, so the build takes considerably longer than the JVM image.
+
+ARG GRAALVM_IMAGE=ghcr.io/graalvm/native-image-community:25
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Druid distribution, identical to distribution/docker/Dockerfile
+# ---------------------------------------------------------------------------------------------------------------------
+# The platform is explicitly specified as x64 to build the Druid distribution.
+# This is because it's not able to build the distribution on arm64 due to dependency problem of web-console. See: https://github.com/apache/druid/issues/13012
+# Since only java jars are shipped in the final image, it's OK to build the distribution on x64.
+# Once the web-console dependency problem is resolved, we can remove the --platform directive.
+FROM --platform=linux/amd64 maven:3.9-eclipse-temurin-25 as builder
+
+# Rebuild from source in this stage
+# This can be unset if the tarball was already built outside of Docker
+ARG BUILD_FROM_SOURCE="true"
+
+RUN export DEBIAN_FRONTEND=noninteractive \
+    && apt-get -qq update \
+    && apt-get -qq -y install --no-install-recommends python3 python3-yaml
+
+COPY . /src
+WORKDIR /src
+RUN --mount=type=cache,target=/root/.m2,sharing=locked if [ "$BUILD_FROM_SOURCE" = "true" ]; then \
+      mvn -B -ff -q \
+      install \
+      -Pdist,bundle-contrib-exts \
+      -Pskip-static-checks,skip-tests \
+      -Dmaven.javadoc.skip=true -T1C \
+      ; fi
+
+RUN --mount=type=cache,target=/root/.m2,sharing=locked VERSION=$(mvn -B -q org.apache.maven.plugins:maven-help-plugin:3.2.0:evaluate \
+      -Dexpression=project.version -DforceStdout=true \
+    ) \
+ && tar -zxf ./distribution/target/apache-druid-${VERSION}-bin.tar.gz -C /opt \
+ && mv /opt/apache-druid-${VERSION} /opt/druid
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Native image
+# ---------------------------------------------------------------------------------------------------------------------
+FROM ${GRAALVM_IMAGE} AS native-builder
+
+# Extensions compiled into the binary. Order matters when two extensions ship different versions of the same library:
+# the one listed first wins.
+ARG DRUID_NATIVE_EXTENSIONS="druid-basic-security postgresql-metadata-storage druid-kafka-indexing-service druid-google-extensions druid-lookups-cached-global druid-avro-extensions druid-datasketches druid-moving-average-query druid-time-min-max druid-stats druid-kubernetes-overlord-extensions prometheus-emitter"
+# Heap of the native-image builder.
+ARG NATIVE_IMAGE_XMX=64g
+# Extra native-image options, e.g. "-march=x86-64-v4" or "--gc=G1" (Oracle GraalVM only).
+ARG NATIVE_IMAGE_OPTS=""
+# Set to false to skip recording reachability metadata from a running cluster (faster, but the image will miss
+# reflection the static analysis cannot see; only for debugging the build itself).
+ARG DRUID_NATIVE_TRACE=true
+
+RUN microdnf install -y findutils && microdnf clean all
+
+COPY --from=builder /opt/druid /opt/druid
+COPY distribution/docker/native /opt/druid-native/build
+WORKDIR /opt/druid-native
+
+# 1. Flat class path: core libraries plus the selected extensions.
+RUN java -cp "$(ls /opt/druid/lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java collect /opt/druid /opt/druid-native ${DRUID_NATIVE_EXTENSIONS}
+
+# 2. Reflection and resource metadata derived from the class path itself: every Druid class (Jackson, Guice and
+#    Jersey all reach them reflectively), every service provider, and the libraries known to load classes by name.
+#    Libraries that only instantiate classes by name get constructors and fields, which keeps the image small.
+RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java generate-config lib config/generated \
+      --reflect-package org.apache.druid. \
+      --reflect-package org.apache.calcite.rel.metadata. \
+      --reflect-methods org.apache.calcite.rel.metadata. \
+      --reflect-fields org.apache.calcite.rel.metadata. \
+      --reflect-package org.apache.calcite.interpreter. \
+      --reflect-methods org.apache.calcite.interpreter. \
+      --reflect-package org.apache.calcite.avatica.remote. \
+      --reflect-methods org.apache.calcite.avatica.remote. \
+      --reflect-package org.apache.commons.dbcp2. \
+      --reflect-methods org.apache.commons.dbcp2. \
+      --reflect-package org.apache.commons.pool2. \
+      --reflect-methods org.apache.commons.pool2. \
+      --reflect-package io.prometheus.client. \
+      --reflect-package io.confluent.kafka.schemaregistry.client.rest.entities. \
+      --reflect-package-constructors org.apache.kafka.common.serialization. \
+      --reflect-package-constructors org.apache.kafka.common.security. \
+      --reflect-package-constructors org.apache.kafka.common.metrics. \
+      --reflect-package-constructors org.apache.kafka.clients.consumer. \
+      --reflect-package-constructors org.skife.jdbi. \
+      --reflect-package-constructors io.confluent. \
+      --reflect-package-constructors net.jpountz. \
+      --reflect-package-constructors com.github.benmanes.caffeine.cache. \
+      --reflect-package-constructors org.apache.derby. \
+      --reflect-package-constructors org.postgresql. \
+      --reflect-package-constructors org.apache.zookeeper. \
+      --reflect-package-constructors org.apache.curator. \
+      --reflect-package-constructors org.apache.avro. \
+      --reflect-package-constructors com.sun.jersey. \
+      --reflect-jar kubernetes-client- \
+      --reflect-jar kubernetes-model-core- \
+      --reflect-jar kubernetes-model-batch- \
+      --reflect-jar kubernetes-model-common- \
+      --reflect-exclude '(Builder|Fluent|FluentImpl)$' \
+      --reflect-exclude 'Fluent\$|\$Nested' \
+      --resource-pattern 'META-INF/services/.*' \
+      --resource-pattern 'org/apache/druid/console/.*' \
+      --resource-pattern '.*\.properties$' \
+      --resource-pattern '.*\.json$' \
+      --resource-pattern 'META-INF/org/apache/logging/log4j/.*' \
+      --resource-pattern 'META-INF/.*\.dat$' \
+      --resource-pattern 'mozilla/public-suffix-list.txt' \
+      --resource-pattern 'org/joda/time/tz/data/.*'
+
+# 3. Metadata recorded by the GraalVM tracing agent from a running cluster (one directory per service).
+RUN if [ "${DRUID_NATIVE_TRACE}" = "true" ]; then \
+      build/trace.sh /opt/druid /opt/druid-native/lib /opt/druid-native/config/trace; \
+    else \
+      mkdir -p config/trace; \
+    fi
+
+# 4. Compile. Every directory that holds metadata is passed to the builder. The reachability analysis (instead of
+#    the default points-to analysis) keeps the analysis of this very large class path tractable, at the price of a
+#    bigger binary; the watchdog interval is raised because single-threaded phases can be silent for a while. Both
+#    can be overridden through NATIVE_IMAGE_OPTS, which comes last.
+RUN CONFIG_DIRS="$(find build/config config -name '*.json' -printf '%h\n' | sort -u | paste -sd ',' -)" \
+    && build/build-native-image.sh lib "${CONFIG_DIRS}" /opt/druid-native/bin/druid \
+         -J-Xmx${NATIVE_IMAGE_XMX} --gc=serial -H:+StaticExecutableWithDynamicLibC \
+         -H:+UseExperimentalReachabilityAnalysis -H:DeadlockWatchdogInterval=30 ${NATIVE_IMAGE_OPTS}
+
+RUN ls -la /opt/druid-native/bin/druid \
+    && /opt/druid-native/bin/druid version \
+    && /opt/druid-native/bin/druid help > /dev/null
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Runtime image, laid out like distribution/docker/Dockerfile
+# ---------------------------------------------------------------------------------------------------------------------
+FROM alpine:3 as bash-static
+ARG TARGETARCH
+RUN apk add --no-cache curl
+#
+# Download bash-static binary to execute scripts that require bash.
+# Although bash-static supports multiple platforms, but there's no need for us to support all those platform, amd64 and arm64 are enough.
+#
+ARG BASH_URL_BASE="https://github.com/robxu9/bash-static/releases/download/5.1.016-1.2.3"
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      BASH_URL="${BASH_URL_BASE}/bash-linux-aarch64" ; \
+    elif [ "$TARGETARCH" = "amd64" ]; then \
+      BASH_URL="${BASH_URL_BASE}/bash-linux-x86_64" ; \
+    else \
+      echo "Unsupported architecture ($TARGETARCH)" && exit 1; \
+    fi; \
+    echo "Downloading bash-static from ${BASH_URL}" \
+    && curl --fail --location \
+      --retry 3 \
+      --retry-delay 5 \
+      --retry-all-errors \
+      --output /bin/bash \
+      "${BASH_URL}"
+
+FROM busybox:1.35.0-glibc as busybox
+
+# cc-debian13 is the distroless base plus libstdc++, which the JNI libraries bundled in snappy-java and zstd-jni need.
+FROM gcr.io/distroless/cc-debian13
+LABEL maintainer="Apache Druid Developers <dev@druid.apache.org>"
+
+COPY --from=busybox /bin/busybox /busybox/busybox
+RUN ["/busybox/busybox", "--install", "/bin"]
+
+RUN addgroup -S -g 1000 druid \
+ && adduser -S -u 1000 -D -H -h /opt/druid -s /bin/sh -g '' -G druid druid
+
+COPY --from=bash-static /bin/bash /bin/bash
+RUN chmod 755 /bin/bash
+
+COPY distribution/docker/druid.sh /druid.sh
+COPY distribution/docker/peon.sh /peon.sh
+
+# The native binary and the launcher shim that stands in for the JVM; configuration and licenses from the
+# distribution. Each compiled-in extension gets an empty directory so that druid.extensions.loadList keeps working.
+COPY --from=builder /opt/druid/LICENSE /opt/druid/NOTICE /opt/druid/README /opt/druid/
+COPY --from=builder /opt/druid/licenses /opt/druid/licenses
+COPY --from=builder /opt/druid/conf /opt/druid/conf
+COPY --from=native-builder /opt/druid-native/bin/druid /opt/druid/bin/druid
+COPY distribution/docker/native/run-java /opt/druid/bin/run-java
+RUN --mount=type=bind,from=native-builder,source=/opt/druid-native/extensions.txt,target=/tmp/extensions.txt \
+ mkdir -p /opt/druid/var /opt/druid/extensions /opt/shared \
+ && for extension in $(cat /tmp/extensions.txt); do mkdir -p "/opt/druid/extensions/${extension}"; done \
+ && chown -R druid:druid /opt/druid /opt/shared \
+ && chmod 775 /opt/druid/var /opt/shared
+
+USER druid
+VOLUME /opt/druid/var
+WORKDIR /opt/druid
+
+ENTRYPOINT ["/druid.sh"]

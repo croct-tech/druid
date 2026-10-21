@@ -1,0 +1,198 @@
+#!/bin/bash
+
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# Launches the GraalVM native image of Druid in place of a JVM.
+#
+# This script replaces bin/run-java in the native Docker image. It accepts the command line that the JVM launcher
+# receives from druid.sh, peon.sh and ForkingTaskRunner:
+#
+#   run-java [jvm-options...] -cp <classpath> org.apache.druid.cli.Main <druid-args...>
+#
+# and turns it into an invocation of the native binary:
+#
+#   druid [runtime-options...] [-Dkey=value...] <druid-args...>
+#
+# Translation rules:
+#   - -D properties pass through. java.class.path is set to the -cp value so that PropertiesModule finds
+#     common.runtime.properties and runtime.properties in the configuration directories, and so that forked peons
+#     inherit the same class path.
+#   - -Xmx, -Xms, -Xmn and -Xss pass through; the native runtime understands them.
+#   - -XX: options pass through when the binary supports them (MaxDirectMemorySize, ActiveProcessorCount,
+#     ExitOnOutOfMemoryError, ...). -XX:MaxRAMPercentage becomes -XX:MaximumHeapSizePercent. Unsupported options,
+#     such as garbage collector selection, are dropped with a warning: an unknown -XX option is fatal for a native
+#     binary.
+#   - Module system options (--add-opens, ...) and other JVM-only options are dropped. The image was built with the
+#     equivalents.
+#   - Jars on the class path are ignored: every extension is compiled into the binary.
+#   - log4j2.configurationFile defaults to the first log4j2.xml found in the configuration directories, because
+#     Log4j cannot discover it on the class path of a native image.
+#   - guice_bytecode_gen_option=DISABLED and fakeSpecialize=true are set unless given, because a native image cannot
+#     define classes at run time.
+#
+# JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS are honoured the way a JVM would, by prepending them to the arguments.
+
+set -eu
+
+DRUID_NATIVE_BINARY="${DRUID_NATIVE_BINARY:-/opt/druid/bin/druid}"
+
+warn() {
+  echo "run-java: $*" >&2
+}
+
+fail() {
+  warn "$*"
+  exit 1
+}
+
+if [ ! -x "$DRUID_NATIVE_BINARY" ]; then
+  fail "native binary $DRUID_NATIVE_BINARY is missing or not executable"
+fi
+
+# Names of the -XX options the binary understands, one per line, read lazily from its own help output.
+supported_xx_options=""
+is_supported_xx_option() {
+  if [ -z "$supported_xx_options" ]; then
+    supported_xx_options="$("$DRUID_NATIVE_BINARY" -XX:PrintFlags= 2>&1 \
+      | sed -n -E 's/^ *-XX:[^A-Za-z]*([A-Za-z0-9]+).*/\1/p' | sort -u)"
+    [ -n "$supported_xx_options" ] || fail "could not list the options supported by $DRUID_NATIVE_BINARY"
+  fi
+  printf '%s\n' "$supported_xx_options" | grep -q -x -- "$1"
+}
+
+# shellcheck disable=SC2086
+set -- ${JAVA_TOOL_OPTIONS:-} ${JDK_JAVA_OPTIONS:-} "$@"
+
+runtime_options=()
+properties=()
+app_args=()
+class_path=""
+main_class=""
+has_log4j_config=0
+has_guice_option=0
+has_fake_specialize=0
+
+while [ $# -gt 0 ]; do
+  arg="$1"
+  shift
+  if [ -n "$main_class" ]; then
+    app_args+=("$arg")
+    continue
+  fi
+  case "$arg" in
+    -cp|-classpath|--class-path)
+      [ $# -gt 0 ] || fail "option $arg requires an argument"
+      class_path="$1"
+      shift
+      ;;
+    --class-path=*)
+      class_path="${arg#*=}"
+      ;;
+    -Dlog4j2.configurationFile=*|-Dlog4j.configurationFile=*)
+      has_log4j_config=1
+      properties+=("$arg")
+      ;;
+    -Dguice_bytecode_gen_option=*)
+      has_guice_option=1
+      properties+=("$arg")
+      ;;
+    -DfakeSpecialize=*)
+      has_fake_specialize=1
+      properties+=("$arg")
+      ;;
+    -Djava.class.path=*)
+      warn "ignoring $arg: java.class.path is taken from -cp"
+      ;;
+    -D*)
+      properties+=("$arg")
+      ;;
+    -Xmx*|-Xms*|-Xmn*|-Xss*)
+      runtime_options+=("$arg")
+      ;;
+    -XX:MaxRAMPercentage=*)
+      percent="${arg#*=}"
+      runtime_options+=("-XX:MaximumHeapSizePercent=${percent%%.*}")
+      ;;
+    -XX:+UseContainerSupport|-XX:-UseContainerSupport|-XX:+Use*GC|-XX:+UseCompactObjectHeaders|-XX:+UnlockExperimentalVMOptions|-XX:+UnlockDiagnosticVMOptions)
+      # Container awareness is always on; the garbage collector and object layout are fixed at build time.
+      ;;
+    -XX:*)
+      name="${arg#-XX:}"
+      name="${name#[+-]}"
+      name="${name%%=*}"
+      if is_supported_xx_option "$name"; then
+        runtime_options+=("$arg")
+      else
+        warn "ignoring $arg: not supported by the native image"
+      fi
+      ;;
+    -server|-client|--add-opens=*|--add-exports=*|--add-modules=*|--add-reads=*|--enable-native-access=*|-Xshare:*)
+      # Compiled into the image; nothing to do at run time.
+      ;;
+    --add-opens|--add-exports|--add-modules|--add-reads|--enable-native-access|--limit-modules|--module-path|-p|--upgrade-module-path|--patch-module)
+      [ $# -gt 0 ] && shift
+      ;;
+    -jar)
+      fail "running a jar is not supported by the native image"
+      ;;
+    -*)
+      warn "ignoring $arg: not applicable to the native image"
+      ;;
+    *)
+      main_class="$arg"
+      ;;
+  esac
+done
+
+[ -n "$main_class" ] || fail "no main class given"
+if [ "$main_class" != "org.apache.druid.cli.Main" ]; then
+  fail "only org.apache.druid.cli.Main is compiled into the native image, cannot run $main_class"
+fi
+
+# Configuration directories come from the class path. Globs such as lib/* name the jars compiled into the binary;
+# any other jar cannot be loaded.
+conf_dirs=()
+IFS=':' read -r -a class_path_entries <<< "$class_path"
+for entry in "${class_path_entries[@]}"; do
+  if [ -z "$entry" ]; then
+    continue
+  elif [ -d "$entry" ]; then
+    conf_dirs+=("$entry")
+  elif [ -f "$entry" ]; then
+    warn "ignoring class path entry $entry: jars cannot be added to the native image at run time"
+  fi
+done
+
+if [ -n "$class_path" ]; then
+  properties+=("-Djava.class.path=$class_path")
+fi
+
+if [ "$has_log4j_config" = 0 ]; then
+  for dir in "${conf_dirs[@]}"; do
+    if [ -f "$dir/log4j2.xml" ]; then
+      properties+=("-Dlog4j2.configurationFile=$dir/log4j2.xml")
+      break
+    fi
+  done
+fi
+[ "$has_guice_option" = 1 ] || properties+=("-Dguice_bytecode_gen_option=DISABLED")
+[ "$has_fake_specialize" = 1 ] || properties+=("-DfakeSpecialize=true")
+
+exec "$DRUID_NATIVE_BINARY" "${runtime_options[@]}" "${properties[@]}" "${app_args[@]}"
