@@ -77,13 +77,29 @@ jobs:
             -f distribution/docker/Dockerfile.native .
           docker image ls druid
 
+      # The image is kept for a few days so that it can be tried locally (docker load < druid-native-image.tar.gz)
+      # before the pull request is merged, and so that it survives a failure of the steps below.
+      - name: Save the native image
+        run: docker save druid:native | gzip -1 > "$RUNNER_TEMP/druid-native-image.tar.gz"
+
+      - name: Upload the native image
+        uses: actions/upload-artifact@v7
+        with:
+          name: druid-native-image
+          path: ${{ runner.temp }}/druid-native-image.tar.gz
+          retention-days: 3
+          compression-level: 0
+
       - name: Benchmark the native image
+        timeout-minutes: 45
         run: distribution/docker/native/bench/benchmark.sh druid:native native "$RUNNER_TEMP/bench"
 
       - name: Smoke-test the Kubernetes task runner
+        timeout-minutes: 30
         run: distribution/docker/native/bench/k8s-smoke.sh druid:native
 
       - name: Benchmark the JVM image
+        timeout-minutes: 45
         run: distribution/docker/native/bench/benchmark.sh druid:jvm jvm "$RUNNER_TEMP/bench"
 
       - name: Publish the reports
