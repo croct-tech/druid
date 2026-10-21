@@ -86,7 +86,16 @@ stop_cluster() {
   for pid in "${PIDS[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
+  # The agent writes its metadata while the JVM shuts down, so give each service time to exit on its own.
   for pid in "${PIDS[@]}"; do
+    for _ in $(seq 1 120); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      log "process $pid did not stop within 120 s; killing it (its trace may be incomplete)"
+      kill -9 "$pid" 2>/dev/null || true
+    fi
     wait "$pid" 2>/dev/null || true
   done
   PIDS=()
@@ -708,16 +717,23 @@ sleep 20
 log "stopping the cluster"
 stop_cluster
 
+{
+  echo "Trace summary: ${#PASSED_STEPS[@]} steps passed, ${#FAILED_STEPS[@]} failed"
+  for step in "${FAILED_STEPS[@]}"; do
+    echo "  failed: $step"
+  done
+  for step in "${PASSED_STEPS[@]}"; do
+    echo "  passed: $step"
+  done
+} > "$OUTPUT_DIR/trace-summary.txt"
 echo
-echo "Trace summary: ${#PASSED_STEPS[@]} steps passed, ${#FAILED_STEPS[@]} failed"
-for step in "${FAILED_STEPS[@]}"; do
-  echo "  failed: $step"
-done
+head -n $(( ${#FAILED_STEPS[@]} + 1 )) "$OUTPUT_DIR/trace-summary.txt"
 echo
 echo "Agent output:"
 find "$OUTPUT_DIR" -type f | sort | xargs -r ls -la
 
-# Steps in the first part must pass; failures later in the workload cost coverage but not the build.
+# Cluster start-up must always succeed. With TRACE_STRICT=1 so must every workload step; without it, a failed step
+# only costs coverage, which is convenient while debugging the workload itself.
 if [ "${TRACE_STRICT:-0}" = 1 ] && [ "${#FAILED_STEPS[@]}" -gt 0 ]; then
   exit 1
 fi

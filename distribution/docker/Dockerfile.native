@@ -88,7 +88,8 @@ ARG DRUID_NATIVE_TRACE=true
 RUN microdnf install -y findutils && microdnf clean all
 
 COPY --from=builder /opt/druid /opt/druid
-COPY distribution/docker/native /opt/druid-native/build
+COPY distribution/docker/native/NativeImageBuildTool.java distribution/docker/native/trace.sh distribution/docker/native/build-native-image.sh /opt/druid-native/build/
+COPY distribution/docker/native/config /opt/druid-native/build/config
 WORKDIR /opt/druid-native
 
 # 1. Flat class path: core libraries plus the selected extensions.
@@ -141,9 +142,10 @@ RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java gen
       --resource-pattern 'mozilla/public-suffix-list.txt' \
       --resource-pattern 'org/joda/time/tz/data/.*'
 
-# 3. Metadata recorded by the GraalVM tracing agent from a running cluster (one directory per service).
+# 3. Metadata recorded by the GraalVM tracing agent from a running cluster (one directory per service). Every step
+#    of the workload must pass: a failed step means a code path whose reflection the image would be missing.
 RUN if [ "${DRUID_NATIVE_TRACE}" = "true" ]; then \
-      build/trace.sh /opt/druid /opt/druid-native/lib /opt/druid-native/config/trace; \
+      TRACE_STRICT=1 build/trace.sh /opt/druid /opt/druid-native/lib /opt/druid-native/config/trace; \
     else \
       mkdir -p config/trace; \
     fi

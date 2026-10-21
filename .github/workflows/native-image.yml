@@ -81,7 +81,7 @@ jobs:
         run: distribution/docker/native/bench/benchmark.sh druid:native native "$RUNNER_TEMP/bench"
 
       - name: Smoke-test the Kubernetes task runner
-        run: distribution/docker/native/bench/k8s-smoke.sh druid:native 2>&1 | tee "$RUNNER_TEMP/bench/k8s-smoke.log"
+        run: distribution/docker/native/bench/k8s-smoke.sh druid:native
 
       - name: Benchmark the JVM image
         run: distribution/docker/native/bench/benchmark.sh druid:jvm jvm "$RUNNER_TEMP/bench"

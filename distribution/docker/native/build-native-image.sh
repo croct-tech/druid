@@ -34,6 +34,9 @@ CONFIG_DIRS="$2"
 OUTPUT="$3"
 shift 3
 
+# native-image refuses to write into a directory that does not exist.
+mkdir -p "$(dirname "$OUTPUT")"
+
 ARGS_FILE="$(mktemp)"
 trap 'rm -f "$ARGS_FILE"' EXIT
 

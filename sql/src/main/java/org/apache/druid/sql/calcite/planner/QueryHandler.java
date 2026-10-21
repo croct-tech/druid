@@ -359,7 +359,14 @@ public abstract class QueryHandler extends SqlStatementHandler.BaseStatementHand
     if (RuntimeCodeGeneration.isAvailable()) {
       return rel.bind(dataContext);
     }
-    return new DruidInterpreter(dataContext, rel, new DruidExpressionScalarCompiler(plannerContext));
+    try {
+      return new DruidInterpreter(dataContext, rel, new DruidExpressionScalarCompiler(plannerContext));
+    }
+    catch (UnsupportedOperationException e) {
+      throw DruidException.forPersona(DruidException.Persona.USER)
+                          .ofCategory(DruidException.Category.UNSUPPORTED)
+                          .build(e, "Cannot execute query without run-time code generation: %s", e.getMessage());
+    }
   }
 
   /**

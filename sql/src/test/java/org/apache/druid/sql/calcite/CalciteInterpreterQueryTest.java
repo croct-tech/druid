@@ -20,6 +20,8 @@
 package org.apache.druid.sql.calcite;
 
 import com.google.common.collect.ImmutableList;
+import org.apache.druid.error.DruidException;
+import org.apache.druid.error.DruidExceptionMatcher;
 import org.apache.druid.sql.calcite.planner.RuntimeCodeGeneration;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
@@ -87,6 +89,38 @@ public class CalciteInterpreterQueryTest extends BaseCalciteQueryTest
         ImmutableList.of(
             new Object[]{8L, 1249L, 156.125, -5L, 1111L}
         )
+    );
+  }
+
+  @Test
+  public void testFloatingPointTypesOnInformationSchemaColumns()
+  {
+    msqIncompatible();
+    // Calcite represents FLOAT and DOUBLE as Double and only REAL as Float; the interpreter must do the same.
+    testQuery(
+        """
+            SELECT CAST(JDBC_TYPE AS FLOAT), CAST(JDBC_TYPE AS REAL), CAST(JDBC_TYPE AS DOUBLE)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = 'druid' AND TABLE_NAME = 'foo' AND COLUMN_NAME = '__time'""",
+        ImmutableList.of(),
+        ImmutableList.of(
+            new Object[]{93.0, 93.0f, 93.0}
+        )
+    );
+  }
+
+  @Test
+  public void testAggregateFunctionThatNeedsCodeGenerationIsRejected()
+  {
+    msqIncompatible();
+    // The scalar subquery becomes a SINGLE_VALUE aggregate, which Calcite's interpreter can only run through Janino.
+    testQueryThrows(
+        """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = (SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'foo')""",
+        new DruidExceptionMatcher(DruidException.Persona.USER, DruidException.Category.UNSUPPORTED, "general")
+            .expectMessageContains("Aggregate function [SINGLE_VALUE] requires run-time code generation")
     );
   }
 

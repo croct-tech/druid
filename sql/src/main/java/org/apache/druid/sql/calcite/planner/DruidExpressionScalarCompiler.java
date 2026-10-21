@@ -122,10 +122,11 @@ public class DruidExpressionScalarCompiler implements DruidInterpreter.ScalarCom
         return eval -> eval.isNumericNull() ? null : (int) eval.asLong();
       case BIGINT:
         return eval -> eval.isNumericNull() ? null : eval.asLong();
-      case FLOAT:
       case REAL:
         return eval -> eval.isNumericNull() ? null : (float) eval.asDouble();
+      case FLOAT:
       case DOUBLE:
+        // Calcite's JavaTypeFactoryImpl maps both FLOAT and DOUBLE to Double.
         return eval -> eval.isNumericNull() ? null : eval.asDouble();
       case DECIMAL:
         return eval -> {

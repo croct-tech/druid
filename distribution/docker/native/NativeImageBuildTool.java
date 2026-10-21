@@ -344,18 +344,30 @@ public final class NativeImageBuildTool
       return matcher.matches() ? matcher.group(2) : "";
     }
 
+    /**
+     * Compares dotted versions component by component: numerically where both components are numbers, otherwise as
+     * strings. A missing component (including an unversioned jar) counts as zero.
+     */
     private static int compareVersions(String left, String right)
     {
-      final String[] leftParts = left.split("\\.");
-      final String[] rightParts = right.split("\\.");
+      final String[] leftParts = left.split("[.\\-_]");
+      final String[] rightParts = right.split("[.\\-_]");
       for (int i = 0; i < Math.max(leftParts.length, rightParts.length); i++) {
-        final long l = i < leftParts.length ? Long.parseLong(leftParts[i]) : 0;
-        final long r = i < rightParts.length ? Long.parseLong(rightParts[i]) : 0;
-        if (l != r) {
-          return Long.compare(l, r);
+        final String l = i < leftParts.length && !leftParts[i].isEmpty() ? leftParts[i] : "0";
+        final String r = i < rightParts.length && !rightParts[i].isEmpty() ? rightParts[i] : "0";
+        final int comparison = isNumeric(l) && isNumeric(r)
+                               ? Long.compare(Long.parseLong(l), Long.parseLong(r))
+                               : l.compareTo(r);
+        if (comparison != 0) {
+          return comparison;
         }
       }
       return 0;
+    }
+
+    private static boolean isNumeric(String s)
+    {
+      return s.length() <= 18 && s.chars().allMatch(Character::isDigit);
     }
   }
 

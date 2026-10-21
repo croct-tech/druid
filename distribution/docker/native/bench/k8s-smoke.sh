@@ -61,7 +61,19 @@ for _ in $(seq 1 120); do
   sleep 2
 done
 sed -i 's#https://127.0.0.1:6443#https://127.0.0.1:16443#' "$KUBECONFIG"
-until kubectl get nodes 2>/dev/null | grep -q ' Ready'; do sleep 2; done
+ready=0
+for _ in $(seq 1 120); do
+  if kubectl get nodes 2>/dev/null | grep -q ' Ready'; then
+    ready=1
+    break
+  fi
+  sleep 2
+done
+if [ "$ready" != 1 ]; then
+  log "k3s did not become ready"
+  docker logs --tail 50 "$NAME" >&2 || true
+  exit 1
+fi
 log "k3s is ready"
 
 log "loading $IMAGE into k3s"
@@ -248,13 +260,22 @@ log "waiting for Druid pods"
 for app in coordinator broker historical router; do
   "${KUBECTL[@]}" rollout status deployment/"$app" --timeout=600s > /dev/null
 done
+healthy=0
 for _ in $(seq 1 300); do
   if [ "$(curl -s --max-time 2 http://127.0.0.1:30081/status/health)" = "true" ] \
      && [ "$(curl -s --max-time 2 http://127.0.0.1:30082/status/health)" = "true" ]; then
+    healthy=1
     break
   fi
   sleep 2
 done
+if [ "$healthy" != 1 ]; then
+  log "the coordinator-overlord or the broker did not become healthy"
+  "${KUBECTL[@]}" get pods -o wide >&2 || true
+  "${KUBECTL[@]}" logs deployment/coordinator --tail=60 >&2 || true
+  "${KUBECTL[@]}" logs deployment/broker --tail=60 >&2 || true
+  exit 1
+fi
 log "coordinator-overlord and broker are healthy"
 "${KUBECTL[@]}" get pods -o wide
 

@@ -41,6 +41,7 @@ import org.apache.calcite.plan.hep.HepProgramBuilder;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelVisitor;
 import org.apache.calcite.rel.core.Aggregate;
+import org.apache.calcite.rel.core.AggregateCall;
 import org.apache.calcite.rel.core.Collect;
 import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.Join;
@@ -57,6 +58,9 @@ import org.apache.calcite.rel.rules.CoreRules;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.sql.SqlAggFunction;
+import org.apache.calcite.sql.fun.SqlInternalOperators;
+import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.util.Pair;
 import org.apache.calcite.util.ReflectUtil;
 import org.apache.calcite.util.ReflectiveVisitDispatcher;
@@ -441,7 +445,29 @@ public class DruidInterpreter extends AbstractEnumerable<Object[]> implements Au
 
     public void visit(Aggregate agg)
     {
+      for (AggregateCall call : agg.getAggCallList()) {
+        if (!isImplementedByAggregateNode(call.getAggregation())) {
+          throw new UnsupportedOperationException(
+              "Aggregate function [" + call.getAggregation().getName() + "] requires run-time code generation"
+          );
+        }
+      }
       node = new AggregateNode(this, agg);
+    }
+
+    /**
+     * Whether {@link AggregateNode} implements the function itself. For any other function it generates an
+     * accumulator class with Janino, bypassing the {@link Compiler}, which is not possible where this interpreter is
+     * used.
+     */
+    private static boolean isImplementedByAggregateNode(SqlAggFunction function)
+    {
+      return function == SqlStdOperatorTable.COUNT
+             || function == SqlStdOperatorTable.SUM
+             || function == SqlStdOperatorTable.SUM0
+             || function == SqlStdOperatorTable.MIN
+             || function == SqlStdOperatorTable.MAX
+             || function == SqlInternalOperators.LITERAL_AGG;
     }
 
     public void visit(Filter filter)

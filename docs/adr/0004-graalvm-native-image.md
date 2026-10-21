@@ -68,7 +68,9 @@ deployment service; the default is the native image.
   image builder and are left out. Monitors that depend on JNA (`OshiSysMonitor`) are untested.
 - Expressions in `sys` and `INFORMATION_SCHEMA` queries are evaluated by Druid's expression engine in the native
   image, so an expression the planner cannot translate to a Druid expression fails there with an "unsupported" error,
-  while a JVM would still evaluate it through Calcite.
+  while a JVM would still evaluate it through Calcite. The same applies to aggregate functions on those tables other
+  than `COUNT`, `SUM`, `MIN`, `MAX` and the ones Calcite rewrites to them (`AVG`, `STDDEV`, `VARIANCE`), such as
+  `SINGLE_VALUE` from a scalar subquery.
 - The image cannot be built on a developer machine with 16 GB of memory. The `Native image` workflow is filtered to
   the files of the native build, so it is not a required check; a change elsewhere that breaks the native image shows
   up in the next release build, or in a manual run of the workflow.
