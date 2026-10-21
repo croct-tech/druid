@@ -48,7 +48,6 @@ trap 'rm -f "$ARGS_FILE"' EXIT
   echo "$OUTPUT"
   echo "--no-fallback"
   echo "--enable-url-protocols=http,https"
-  echo "--install-exit-handlers"
   echo "--enable-monitoring=heapdump"
   echo "--add-modules=jdk.incubator.vector"
   # Same strong encapsulation exceptions as bin/run-java and ForkingTaskRunner.

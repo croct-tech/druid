@@ -124,6 +124,16 @@ public final class NativeImageBuildTool
   private static final Pattern BUILD_TIME_INIT_OPTION =
       Pattern.compile("--initialize-at-build-time=[^\\s,]*(?:\\s*,\\s*[^\\s,]+)*");
 
+  /**
+   * An Args property left without any option, which the native-image driver rejects.
+   */
+  private static final Pattern EMPTY_ARGS = Pattern.compile("(?m)^[ \\t]*Args[ \\t]*=[ \\t]*$\\r?\\n?");
+
+  /**
+   * A line that defines a property, as opposed to a comment or a blank line.
+   */
+  private static final Pattern PROPERTY_LINE = Pattern.compile("(?m)^[ \\t]*[A-Za-z]");
+
   private NativeImageBuildTool()
   {
   }
@@ -279,7 +289,12 @@ public final class NativeImageBuildTool
         if (entry.getName().startsWith("META-INF/native-image/") && entry.getName().endsWith("native-image.properties")) {
           final String content = new String(jarFile.getInputStream(entry).readAllBytes(), StandardCharsets.UTF_8);
           if (BUILD_TIME_INIT.matcher(content).find()) {
-            rewritten.put(entry.getName(), withoutBuildTimeInit(content).getBytes(StandardCharsets.UTF_8));
+            final String remaining = withoutBuildTimeInit(content);
+            // Without any property left, the entry itself is dropped.
+            rewritten.put(
+                entry.getName(),
+                PROPERTY_LINE.matcher(remaining).find() ? remaining.getBytes(StandardCharsets.UTF_8) : null
+            );
           }
         }
       }
@@ -294,6 +309,9 @@ public final class NativeImageBuildTool
                                : new JarOutputStream(Files.newOutputStream(target), in.getManifest())) {
       JarEntry entry;
       while ((entry = in.getNextJarEntry()) != null) {
+        if (rewritten.containsKey(entry.getName()) && rewritten.get(entry.getName()) == null) {
+          continue;
+        }
         out.putNextEntry(new JarEntry(entry.getName()));
         final byte[] replacement = rewritten.get(entry.getName());
         if (replacement != null) {
@@ -315,7 +333,8 @@ public final class NativeImageBuildTool
   static String withoutBuildTimeInit(String content)
   {
     final String joined = content.replaceAll("\\\\\\r?\\n[ \\t]*", "");
-    return BUILD_TIME_INIT_OPTION.matcher(joined).replaceAll(" ");
+    final String stripped = BUILD_TIME_INIT_OPTION.matcher(joined).replaceAll(" ");
+    return EMPTY_ARGS.matcher(stripped).replaceAll("");
   }
 
   private static Set<String> classEntries(Path jar) throws IOException
