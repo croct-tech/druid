@@ -63,10 +63,10 @@ import java.util.stream.Stream;
  *     reach and which slows the analysis down badly. All other core libraries are kept. When an extension jar
  *     contains classes that
  *     are already present, one of the two is dropped: against a core library the newer version wins, against another
- *     extension the extension listed first wins. Embedded native-image.properties files that ask for a whole package
- *     to be initialized at build time (Netty's codec jars do this for all of io.netty) are removed while copying,
- *     because build-time initialization of Netty pulls Log4j loggers into the image heap and breaks the build. The
- *     extension names are written to &lt;output-dir&gt;/extensions.txt.
+ *     extension the extension listed first wins. Embedded native-image.properties files that ask for classes to be
+ *     initialized at build time (Netty's do) are removed while copying: initialized on the build JVM, those classes
+ *     capture state the native runtime cannot use (Log4j loggers, a direct-buffer cleaner backed by shared arenas).
+ *     The extension names are written to &lt;output-dir&gt;/extensions.txt.
  *
  * generate-config &lt;lib-dir&gt; &lt;output-dir&gt; [--reflect-package &lt;prefix&gt;]... [--reflect-jar &lt;prefix&gt;]...
  *                 [--reflect-package-constructors &lt;prefix&gt;]... [--reflect-methods &lt;prefix&gt;]...
@@ -109,11 +109,13 @@ public final class NativeImageBuildTool
   private static final Pattern VERSIONED_JAR = Pattern.compile("^(.*?)-(\\d+(?:\\.\\d+)*)([.-][0-9A-Za-z.-]*)?\\.jar$");
 
   /**
-   * A build-time initialization request for a package rather than a class: the last segment starts with a lowercase
-   * letter. Such requests come from Netty's native-image.properties files.
+   * A build-time initialization request in a library's native-image.properties. Netty's codec jars ask for all of
+   * io.netty, which pulls Log4j loggers into the image heap, and netty-common asks for CleanerJava25, whose static
+   * initializer probes Arena.ofShared: run on the build JVM the probe succeeds, and the image keeps a direct-buffer
+   * cleaner the native runtime cannot use. Build-time initialization is only an optimization, so every such request
+   * is dropped and the classes initialize at run time.
    */
-  private static final Pattern PACKAGE_BUILD_TIME_INIT =
-      Pattern.compile("--initialize-at-build-time=[A-Za-z0-9_.$]*\\.[a-z][A-Za-z0-9_]*(?=[\\s,\\\\]|$)");
+  private static final Pattern BUILD_TIME_INIT = Pattern.compile("--initialize-at-build-time=");
 
   private NativeImageBuildTool()
   {
@@ -242,9 +244,9 @@ public final class NativeImageBuildTool
       );
     }
 
-    final List<String> stripped = copyWithoutPackageBuildTimeInit(candidate.path, libDir.resolve(name));
+    final List<String> stripped = copyWithoutBuildTimeInit(candidate.path, libDir.resolve(name));
     for (String entry : stripped) {
-      report.add("strip    " + candidate.origin + "/" + name + "!" + entry + " (package-wide build-time initialization)");
+      report.add("strip    " + candidate.origin + "/" + name + "!" + entry + " (build-time initialization)");
     }
     jarsByName.put(name, candidate);
     for (String clazz : classes) {
@@ -256,10 +258,10 @@ public final class NativeImageBuildTool
   }
 
   /**
-   * Copies a jar, leaving out native-image.properties entries that request build-time initialization of a whole
-   * package. Returns the names of the entries left out.
+   * Copies a jar, leaving out native-image.properties entries that request build-time initialization. Returns the
+   * names of the entries left out.
    */
-  private static List<String> copyWithoutPackageBuildTimeInit(Path source, Path target) throws IOException
+  private static List<String> copyWithoutBuildTimeInit(Path source, Path target) throws IOException
   {
     final List<String> toStrip = new ArrayList<>();
     try (JarFile jarFile = new JarFile(source.toFile())) {
@@ -268,7 +270,7 @@ public final class NativeImageBuildTool
         final JarEntry entry = entries.nextElement();
         if (entry.getName().startsWith("META-INF/native-image/") && entry.getName().endsWith("native-image.properties")) {
           final String content = new String(jarFile.getInputStream(entry).readAllBytes(), StandardCharsets.UTF_8);
-          if (PACKAGE_BUILD_TIME_INIT.matcher(content).find()) {
+          if (BUILD_TIME_INIT.matcher(content).find()) {
             toStrip.add(entry.getName());
           }
         }

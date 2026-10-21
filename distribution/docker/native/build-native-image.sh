@@ -63,8 +63,12 @@ trap 'rm -f "$ARGS_FILE"' EXIT
   echo "-H:+UnlockExperimentalVMOptions"
   echo "-H:+ReportExceptionStackTraces"
   echo "-H:+AddAllCharsets"
-  # Netty allocates direct buffers through Arena.ofShared on Java 25 (CleanerJava25); opt-in for native images.
-  echo "-H:+SharedArenaSupport"
+  # Netty's CleanerJava25 probes Arena.ofShared in its static initializer and, if that works, allocates direct
+  # buffers through shared arenas. Shared arenas need -H:+SharedArenaSupport, which cannot be combined with the
+  # Vector API in GraalVM 25 (oracle/graal#13321), so the probe must run inside the image, where it fails and Netty
+  # falls back to JDK-managed direct buffers. Netty's own metadata asks for build-time initialization instead.
+  echo "--initialize-at-run-time=io.netty.util.internal.CleanerJava25"
+  echo "--initialize-at-run-time=io.grpc.netty.shaded.io.netty.util.internal.CleanerJava25"
   echo "-H:ConfigurationFileDirectories=$CONFIG_DIRS"
 } > "$ARGS_FILE"
 
