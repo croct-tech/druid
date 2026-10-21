@@ -25,7 +25,8 @@
 #
 #   k8s-smoke.sh <image> [k3s-image]
 #
-# Needs docker and kubectl. Cleans up the k3s container on exit unless K8S_SMOKE_KEEP=1.
+# Needs only docker: kubectl runs inside the k3s container. Cleans up the k3s container on exit unless
+# K8S_SMOKE_KEEP=1.
 
 set -euo pipefail
 
@@ -33,8 +34,9 @@ IMAGE="$1"
 K3S_IMAGE="${2:-rancher/k3s:v1.35.0-k3s1}"
 NAME="druid-k3s-smoke"
 WORK="$(mktemp -d)"
-export KUBECONFIG="$WORK/kubeconfig"
-KUBECTL=(kubectl -n druid)
+# k3s ships kubectl, already configured for its own API server.
+KUBECTL_RAW=(docker exec -i "$NAME" kubectl)
+KUBECTL=("${KUBECTL_RAW[@]}" -n druid)
 
 log() {
   echo "$(date -u +%H:%M:%S) $*" >&2
@@ -45,25 +47,18 @@ cleanup() {
     docker rm -f "$NAME" > /dev/null 2>&1 || true
     rm -rf "$WORK"
   else
-    log "keeping k3s container $NAME; KUBECONFIG=$KUBECONFIG"
+    log "keeping k3s container $NAME; use: docker exec -i $NAME kubectl -n druid ..."
   fi
 }
 trap cleanup EXIT
 
 log "starting k3s"
 docker rm -f "$NAME" > /dev/null 2>&1 || true
-docker run -d --name "$NAME" --privileged -p 16443:6443 -p 30081:30081 -p 30082:30082 -p 30888:30888 \
-  "$K3S_IMAGE" server --disable traefik --disable metrics-server --tls-san 127.0.0.1 > /dev/null
-for _ in $(seq 1 120); do
-  if docker exec "$NAME" cat /etc/rancher/k3s/k3s.yaml > "$KUBECONFIG" 2>/dev/null && [ -s "$KUBECONFIG" ]; then
-    break
-  fi
-  sleep 2
-done
-sed -i 's#https://127.0.0.1:6443#https://127.0.0.1:16443#' "$KUBECONFIG"
+docker run -d --name "$NAME" --privileged -p 30081:30081 -p 30082:30082 -p 30888:30888 \
+  "$K3S_IMAGE" server --disable traefik --disable metrics-server > /dev/null
 ready=0
 for _ in $(seq 1 120); do
-  if kubectl get nodes 2>/dev/null | grep -q ' Ready'; then
+  if "${KUBECTL_RAW[@]}" get nodes 2>/dev/null | grep -q ' Ready'; then
     ready=1
     break
   fi
@@ -79,8 +74,8 @@ log "k3s is ready"
 log "loading $IMAGE into k3s"
 docker save "$IMAGE" | docker exec -i "$NAME" ctr -n k8s.io images import - > /dev/null
 
-kubectl create namespace druid > /dev/null
-kubectl apply -n druid -f - <<MANIFESTS
+"${KUBECTL_RAW[@]}" create namespace druid > /dev/null
+"${KUBECTL[@]}" apply -f - <<MANIFESTS
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -254,7 +249,7 @@ MANIFEST
   druid_service historical historical 8083 30083 512m 512m "            - {name: druid_segmentCache_locations, value: '[{\"path\":\"/opt/druid/var/druid/segment-cache\",\"maxSize\":\"1g\"}]'}
             - {name: druid_server_maxSize, value: 1g}"
   druid_service router router 8888 30888 128m 64m "            - {name: druid_router_managementProxy_enabled, value: \"true\"}"
-} | kubectl apply -n druid -f - > /dev/null
+} | "${KUBECTL[@]}" apply -f - > /dev/null
 
 log "waiting for Druid pods"
 for app in coordinator broker historical router; do

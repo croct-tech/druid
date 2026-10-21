@@ -54,12 +54,20 @@ deployment service; the default is the native image.
 
 ## Consequences
 
+- On the benchmark cluster (`distribution/docker/native/bench`, every service type with small heaps, on one 4-core
+  host), the six native services idle at about half the memory of the JVM ones (1.1 GB against 2.2 GB of cgroup usage
+  in total) and stay there under load, where the JVM cluster grows to 3 GB; each service is healthy within a few
+  seconds instead of about a minute. Query latency is not worse, but the workload is too short to let a JVM warm up,
+  so it says little about steady-state throughput.
 - No extension can be added at run time; changing the set means rebuilding the image. `DRUID_ADDITIONAL_CLASSPATH`
   may only hold configuration directories.
 - Every compiled-in extension module is active on every service, whatever `druid.extensions.loadList` says. Most
   modules only register types, but `druid-kubernetes-overlord-extensions` makes `k8s` the default
   `druid.indexer.runner.type`, so an overlord that should fork or use middleManagers must set
   `druid.indexer.runner.type=httpRemote` explicitly.
+- The Kubernetes task runner talks to the API server through the JDK's HTTP client: the launcher forces
+  `druid.indexer.runner.k8sAndWorker.http.httpClientType=javaStandardHttp` (system properties override Druid's
+  properties files), because the default Vert.x client and the OkHttp client are not usable in the native image.
 - JVM options have no effect beyond heap sizing: `-Xmx`, `-Xms`, `-XX:MaxDirectMemorySize`, `-XX:ActiveProcessorCount`
   and `-XX:+ExitOnOutOfMemoryError` are honoured, everything else is dropped with a warning. The garbage collector is
   GraalVM's serial collector, fixed at build time; `-XX:+UseG1GC` and friends are ignored. Without `-Xmx` the native
