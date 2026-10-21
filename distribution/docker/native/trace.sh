@@ -597,7 +597,7 @@ sql "sql: sys.tasks" "$BROKER" "SELECT task_id, type, status FROM sys.tasks WHER
 sql "sql: sys.supervisors" "$BROKER" "SELECT supervisor_id, state FROM sys.supervisors" > /dev/null
 sql "sql: sys.segments aggregate" "$BROKER" "SELECT datasource, COUNT(*) AS segments, SUM(size) AS bytes, MIN(num_rows), MAX(num_rows), AVG(num_rows) FROM sys.segments WHERE is_published = 1 GROUP BY datasource HAVING COUNT(*) > 0 ORDER BY datasource" > /dev/null
 sql "sql: sys.tasks aggregate" "$BROKER" "SELECT status, COUNT(*) AS tasks FROM sys.tasks GROUP BY status ORDER BY status" > /dev/null
-sql "sql: sys.servers join" "$BROKER" "SELECT s.server_type, COUNT(DISTINCT ss.segment_id) AS segments FROM sys.servers s LEFT JOIN sys.server_segments ss ON s.server = ss.server GROUP BY s.server_type ORDER BY s.server_type" > /dev/null
+sql "sql: sys.servers join" "$BROKER" "SELECT s.server_type, COUNT(ss.segment_id) AS segments FROM sys.servers s LEFT JOIN sys.server_segments ss ON s.server = ss.server GROUP BY s.server_type ORDER BY s.server_type" > /dev/null
 sql "sql: information_schema" "$BROKER" "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'druid' AND TABLE_NAME LIKE 'trace%' ORDER BY TABLE_NAME, ORDINAL_POSITION" > /dev/null
 sql "sql: information_schema.schemata" "$BROKER" "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME" > /dev/null
 sql "sql: information_schema aggregate" "$BROKER" "SELECT TABLE_NAME, COUNT(*) AS columns, SUM(CASE WHEN IS_NULLABLE = 'YES' THEN 1 ELSE 0 END) AS nullable FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'druid' GROUP BY TABLE_NAME ORDER BY TABLE_NAME" > /dev/null
