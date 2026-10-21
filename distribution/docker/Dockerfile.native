@@ -30,9 +30,10 @@
 # Build from a tarball already produced by `mvn install -Pdist,bundle-contrib-exts`:
 #   DOCKER_BUILDKIT=1 docker build -f distribution/docker/Dockerfile.native --build-arg BUILD_FROM_SOURCE=false -t druid:native .
 #
-# The native-image step needs a large machine: the analysis of Druid plus its extensions does not fit in 16 GB, so
-# the builder heap defaults to 64 GB (NATIVE_IMAGE_XMX) and CI runs this build on a 32-core, 128 GB runner. The
-# recording step also starts a small Druid cluster, so the build takes considerably longer than the JVM image.
+# The native-image step needs a large machine: the analysis of Druid plus its extensions does not fit in 16 GB and
+# the build peaks at about 40 GB of resident memory, so the builder heap defaults to 64 GB (NATIVE_IMAGE_XMX) and CI
+# runs this build on a 32-core, 128 GB runner. The recording step also starts a small Druid cluster, so the build
+# takes considerably longer than the JVM image.
 
 ARG GRAALVM_IMAGE=ghcr.io/graalvm/native-image-community:25
 
@@ -98,8 +99,14 @@ RUN java -cp "$(ls /opt/druid/lib/asm-*.jar | head -1)" build/NativeImageBuildTo
 # 2. Reflection and resource metadata derived from the class path itself: every Druid class (Jackson, Guice and
 #    Jersey all reach them reflectively), every service provider, and the libraries known to load classes by name.
 #    Libraries that only instantiate classes by name get constructors and fields, which keeps the image small.
+#    airline builds the command line (its own commands, such as help, are instantiated reflectively) and log4j
+#    configures its plugins through annotated factory methods and builder fields, for whichever appenders a
+#    log4j2.xml names, so both are registered in full rather than from the recording.
 RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java generate-config lib config/generated \
       --reflect-package org.apache.druid. \
+      --reflect-package com.github.rvesse.airline. \
+      --reflect-package org.apache.logging.log4j.core. \
+      --reflect-package-constructors org.apache.logging.log4j. \
       --reflect-package org.apache.calcite.rel.metadata. \
       --reflect-methods org.apache.calcite.rel.metadata. \
       --reflect-fields org.apache.calcite.rel.metadata. \
@@ -131,8 +138,8 @@ RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java gen
       --reflect-jar kubernetes-model-core- \
       --reflect-jar kubernetes-model-batch- \
       --reflect-jar kubernetes-model-common- \
-      --reflect-exclude '(Builder|Fluent|FluentImpl)$' \
-      --reflect-exclude 'Fluent\$|\$Nested' \
+      --reflect-exclude '^io\.fabric8\..*(Builder|Fluent|FluentImpl)$' \
+      --reflect-exclude '^io\.fabric8\..*(Fluent\$|\$Nested)' \
       --resource-pattern 'META-INF/services/.*' \
       --resource-pattern 'org/apache/druid/console/.*' \
       --resource-pattern '.*\.properties$' \

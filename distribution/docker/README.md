@@ -76,8 +76,9 @@ Build arguments:
 
 - `DRUID_NATIVE_EXTENSIONS`: space-separated extension directory names to compile in. Everything else is unavailable
   at run time. When two extensions ship different versions of the same library, the one listed first wins.
-- `NATIVE_IMAGE_XMX`: heap of the native-image builder (default `64g`). The analysis does not fit in 16 GB; CI builds
-  the image on a 32-core, 128 GB runner (`.github/workflows/native-image.yml`).
+- `NATIVE_IMAGE_XMX`: heap of the native-image builder (default `64g`). The analysis does not fit in 16 GB and the
+  build peaks at about 40 GB of resident memory; CI builds the image on a 32-core, 128 GB runner
+  (`.github/workflows/native-image.yml`).
 - `NATIVE_IMAGE_OPTS`: extra `native-image` options, for example `-march=x86-64-v4`.
 - `GRAALVM_IMAGE`: the builder image (default GraalVM Community for JDK 25).
 

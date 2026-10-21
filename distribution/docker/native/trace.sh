@@ -172,20 +172,32 @@ druid.auth.authorizer.basic.type=basic
 druid.lookup.lookupTier=__default
 PROPS
 
+# Logs go to the console through the same routing appender as the distribution's log4j2.xml, so that the indexer's
+# per-task log files and the lookups behind them are exercised under the agent.
 cat > "$CONF/_common/log4j2.xml" <<'XML'
 <?xml version="1.0" encoding="UTF-8" ?>
 <Configuration status="WARN">
   <Appenders>
     <Console name="Console" target="SYSTEM_OUT">
-      <PatternLayout pattern="%d{ISO8601} %p [%t] %c - %m%n"/>
+      <PatternLayout pattern="%d{ISO8601} %p [%t] %c -%notEmpty{ [%markerSimpleName]} %m%n"/>
     </Console>
+    <Routing name="RoutingAppender">
+      <Routes pattern="$${ctx:task.log.id}">
+        <Route>
+          <File name="task-${ctx:task.log.id}" fileName="${ctx:task.log.file}">
+            <PatternLayout pattern="%d{ISO8601} %p [%t] %c -%notEmpty{ [%markerSimpleName]} %m%n"/>
+          </File>
+        </Route>
+        <Route key="$${ctx:task.log.id}" ref="Console"/>
+      </Routes>
+    </Routing>
   </Appenders>
   <Loggers>
     <Root level="info">
-      <AppenderRef ref="Console"/>
+      <AppenderRef ref="RoutingAppender"/>
     </Root>
     <Logger name="org.apache.druid.jetty.RequestLog" level="info" additivity="false">
-      <AppenderRef ref="Console"/>
+      <AppenderRef ref="RoutingAppender"/>
     </Logger>
   </Loggers>
 </Configuration>
