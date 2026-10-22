@@ -45,7 +45,12 @@ The build is heavy. The class path of Druid plus these extensions reaches roughl
 and the image builder's default points-to analysis never finished on a 16 GB machine, however it was constrained. The
 build therefore uses GraalVM's reachability analysis (`-H:+UseExperimentalReachabilityAnalysis`), which is faster and
 needs less memory at the price of keeping more code, gives the builder a 64 GB heap by default (`NATIVE_IMAGE_XMX`),
-and runs in CI on the `croct-custom-32` runner (32 cores, 128 GB). The `Native image` workflow builds the image on
+and runs in CI on the `croct-custom-32` runner (32 cores, 128 GB). That runner's workspace is one directory deeper than
+on GitHub-hosted runners, and `actions/cache` stores paths relative to the workspace, so jobs on it cache `~/.m2`
+under their own key: `setup-java`'s cache, which GitHub-hosted jobs also save, would restore outside `~/.m2`.
+Maven Central also rate-limits the runner (HTTP 429), so those jobs download from Google's mirror of Central
+(`.github/maven-settings.xml`).
+The `Native image` workflow builds the image on
 pull requests that touch the native build, runs the benchmark workload (`distribution/docker/native/bench`) against it
 and against the JVM image built from the same tarball, smoke-tests the Kubernetes task runner on a k3s cluster, and
 publishes the reports in the job summary. The `Release` workflow (ADR-0003) builds both images on the same runner and
