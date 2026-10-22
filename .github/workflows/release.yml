@@ -99,7 +99,18 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: 25
-          cache: 'maven'
+
+      # Not setup-java's Maven cache, which this runner shares with GitHub-hosted ones. Caches store ~/.m2 relative to the
+      # workspace, which is one level deeper here, so their entries restore outside ~/.m2 and every build downloads
+      # Maven and all dependencies again (docs/adr/0004-graalvm-native-image.md).
+      - name: Cache Maven
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper/dists
+          key: maven-croct-custom-32-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: maven-croct-custom-32-
 
       - name: Build the Druid distribution
         env:
