@@ -89,6 +89,9 @@ deployment service; the default is the native image.
   `JvmMonitor` cannot report per-thread allocation (`jvm/...` allocation metrics) because the native runtime's
   thread MXBean lacks it. The trace, the benchmark and the Kubernetes smoke test run with all four monitors, so a
   monitor that fails to start fails the build.
+- Segments compressed with LZ4, LZF and ZSTD can be read: the class-path rules register LZF's Unsafe-based decoder,
+  which the library instantiates by name, and zstd-jni's bundled native library, and the trace ingests a datasource
+  with LZF dimensions and ZSTD metrics.
 - Start-up takes a few seconds instead of tens of seconds. That exposed a benign race in the overlord: it can win the
   leader election before its segment metadata cache has started, log "Cache has not been started yet", surrender and
   win again a second later. Jersey also logs a JAXB stack trace at start-up (the JAXB runtime is not included and
