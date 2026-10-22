@@ -182,6 +182,7 @@ data:
   druid_indexer_logs_type: file
   druid_indexer_logs_directory: /opt/shared/indexing-logs
   druid_emitter: noop
+  druid_monitoring_monitors: '["org.apache.druid.java.util.metrics.JvmMonitor", "org.apache.druid.java.util.metrics.JvmCpuMonitor", "org.apache.druid.java.util.metrics.JvmThreadsMonitor", "org.apache.druid.java.util.metrics.OshiSysMonitor"]'
   druid_lookup_enableLookupSyncOnStartup: "false"
   druid_processing_buffer_sizeBytes: "25000000"
   druid_processing_numMergeBuffers: "2"

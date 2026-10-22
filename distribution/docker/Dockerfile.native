@@ -102,7 +102,12 @@ RUN java -cp "$(ls /opt/druid/lib/asm-*.jar | head -1)" build/NativeImageBuildTo
 #    Guice injection points (Inject constructors, methods and fields, Provides methods) are registered in every jar.
 #    airline builds the command line (its own commands, such as help, are instantiated reflectively) and log4j
 #    configures its plugins through annotated factory methods and builder fields, for whichever appenders a
-#    log4j2.xml names, so both are registered in full rather than from the recording.
+#    log4j2.xml names, so both are registered in full rather than from the recording. JNA reads the fields of its
+#    Structure subclasses and instantiates them reflectively, so OSHI's and jna-platform's Linux bindings (behind
+#    JvmCpuMonitor and OshiSysMonitor) get constructors and fields; JNA's own JNI metadata and the proxies for the
+#    library interfaces OSHI loads are checked in under build/config/jna. Segment codecs: compress-lzf instantiates
+#    its Unsafe-based decoder by name, and zstd-jni loads its native library from a resource (snappy-java ships its
+#    own resource metadata).
 RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java generate-config lib config/generated \
       --reflect-package org.apache.druid. \
       --reflect-package com.github.rvesse.airline. \
@@ -136,6 +141,13 @@ RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java gen
       --reflect-package-constructors org.apache.curator. \
       --reflect-package-constructors org.apache.avro. \
       --reflect-package-constructors com.sun.jersey. \
+      --reflect-package-constructors com.ning.compress. \
+      --reflect-package oshi.jna. \
+      --reflect-fields oshi.jna. \
+      --reflect-package com.sun.jna.platform.linux. \
+      --reflect-fields com.sun.jna.platform.linux. \
+      --reflect-package com.sun.jna.platform.unix. \
+      --reflect-fields com.sun.jna.platform.unix. \
       --reflect-jar kubernetes-client- \
       --reflect-jar kubernetes-model-core- \
       --reflect-jar kubernetes-model-batch- \
@@ -149,6 +161,7 @@ RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java gen
       --resource-pattern 'META-INF/org/apache/logging/log4j/.*' \
       --resource-pattern 'META-INF/.*\.dat$' \
       --resource-pattern 'mozilla/public-suffix-list.txt' \
+      --resource-pattern 'linux/amd64/libzstd-jni-.*\.so$' \
       --resource-pattern 'org/joda/time/tz/data/.*'
 
 # 3. Metadata recorded by the GraalVM tracing agent from a running cluster (one directory per service). Every step

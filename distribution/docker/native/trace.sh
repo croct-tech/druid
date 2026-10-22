@@ -138,7 +138,9 @@ druid.indexer.logs.directory=$VAR/indexing-logs
 druid.selectors.indexing.serviceName=druid/overlord
 druid.selectors.coordinator.serviceName=druid/coordinator
 
-druid.monitoring.monitors=["org.apache.druid.java.util.metrics.JvmMonitor","org.apache.druid.server.metrics.ServiceStatusMonitor"]
+# All JVM and system monitors, so that the recording covers JNA, through which JvmCpuMonitor and OshiSysMonitor
+# reach libc.
+druid.monitoring.monitors=["org.apache.druid.java.util.metrics.JvmMonitor","org.apache.druid.java.util.metrics.JvmCpuMonitor","org.apache.druid.java.util.metrics.JvmThreadsMonitor","org.apache.druid.java.util.metrics.OshiSysMonitor","org.apache.druid.server.metrics.ServiceStatusMonitor"]
 druid.monitoring.emissionPeriod=PT10S
 druid.emitter=composing
 druid.emitter.composing.emitters=["logging","prometheus"]
@@ -488,8 +490,11 @@ set +e
 
 INLINE_DATA='{\"time\":\"2015-09-12T00:46:58.771Z\",\"page\":\"Druid\",\"user\":\"alice\",\"country\":\"BR\",\"added\":36,\"deleted\":0,\"delta\":36.0}\n{\"time\":\"2015-09-12T01:46:58.771Z\",\"page\":\"GraalVM\",\"user\":\"bob\",\"country\":\"US\",\"added\":17,\"deleted\":3,\"delta\":14.0}\n{\"time\":\"2015-09-12T02:46:58.771Z\",\"page\":\"Druid\",\"user\":\"carol\",\"country\":\"BR\",\"added\":5,\"deleted\":1,\"delta\":4.0}\n{\"time\":\"2015-09-12T03:46:58.771Z\",\"page\":\"Kafka\",\"user\":\"alice\",\"country\":\"DE\",\"added\":100,\"deleted\":10,\"delta\":90.0}\n{\"time\":\"2015-09-12T04:46:58.771Z\",\"page\":\"GraalVM\",\"user\":\"dave\",\"country\":\"US\",\"added\":8,\"deleted\":8,\"delta\":0.0}\n{\"time\":\"2015-09-12T05:46:58.771Z\",\"page\":\"Druid\",\"user\":\"erin\",\"country\":\"FR\",\"added\":42,\"deleted\":2,\"delta\":40.0}'
 
+# The second datasource is compressed with LZF (dimensions) and ZSTD (metrics and __time), so that the recording
+# covers those decoders as well as the default LZ4.
 index_task() {
   local datasource="$1"
+  local index_spec="${2:-{\}}"
   cat <<TASK
 {
   "type": "index_parallel",
@@ -499,7 +504,7 @@ index_task() {
       "inputSource": {"type": "inline", "data": "$INLINE_DATA"},
       "inputFormat": {"type": "json"}
     },
-    "tuningConfig": {"type": "index_parallel", "partitionsSpec": {"type": "dynamic"}, "maxNumConcurrentSubTasks": 1},
+    "tuningConfig": {"type": "index_parallel", "partitionsSpec": {"type": "dynamic"}, "maxNumConcurrentSubTasks": 1, "indexSpec": $index_spec},
     "dataSchema": {
       "dataSource": "$datasource",
       "timestampSpec": {"column": "time", "format": "iso"},
@@ -525,7 +530,7 @@ TASK
 }
 
 first_response="$("${CURL[@]}" -X POST -H 'Content-Type: application/json' --data-binary "$(index_task trace)" "$COORDINATOR/druid/indexer/v1/task")" || true
-second_response="$("${CURL[@]}" -X POST -H 'Content-Type: application/json' --data-binary "$(index_task trace_indexer)" "$COORDINATOR/druid/indexer/v1/task")" || true
+second_response="$("${CURL[@]}" -X POST -H 'Content-Type: application/json' --data-binary "$(index_task trace_indexer '{"dimensionCompression": "lzf", "metricCompression": "zstd"}')" "$COORDINATOR/druid/indexer/v1/task")" || true
 first_task="$(printf '%s' "$first_response" | sed -n 's/.*"task":"\([^"]*\)".*/\1/p')"
 second_task="$(printf '%s' "$second_response" | sed -n 's/.*"task":"\([^"]*\)".*/\1/p')"
 log "submitted ingestion tasks [$first_task] and [$second_task]"
@@ -590,6 +595,7 @@ sql "sql: union all" "$BROKER" "SELECT page, SUM(added) FROM (SELECT page, added
 sql "sql: window" "$BROKER" "SELECT page, added, SUM(added) OVER (PARTITION BY page ORDER BY __time) AS running_total FROM trace LIMIT 20" > /dev/null
 sql "sql: scan with expressions" "$BROKER" "SELECT __time, UPPER(page), CONCAT(user, '@', country), added * 2 + deleted, CASE WHEN delta > 10 THEN 'big' ELSE 'small' END, MV_TO_ARRAY(page), STRING_TO_ARRAY(user, ',') FROM trace ORDER BY __time DESC LIMIT 5" > /dev/null
 sql "sql: time boundary and min/max" "$BROKER" "SELECT MIN(__time), MAX(__time), MIN(time_min), MAX(time_max) FROM trace" > /dev/null
+sql "sql: lzf and zstd columns" "$BROKER" "SELECT page, MIN(__time), MAX(__time), SUM(added), MAX(delta) FROM trace_indexer GROUP BY page ORDER BY page" > /dev/null
 sql "sql: explain" "$BROKER" "EXPLAIN PLAN FOR SELECT page, COUNT(*) FROM trace GROUP BY page" > /dev/null
 sql "sql: sys.segments" "$BROKER" "SELECT segment_id, datasource, size, is_published, is_available FROM sys.segments WHERE datasource = 'trace' AND is_published = 1 ORDER BY segment_id" > /dev/null
 sql "sql: sys.servers" "$BROKER" "SELECT server, server_type, tier, curr_size FROM sys.servers WHERE server_type <> 'peon' ORDER BY server" > /dev/null

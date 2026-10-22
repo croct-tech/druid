@@ -35,7 +35,7 @@ druid_storage_storageDirectory=/opt/shared/segments
 druid_indexer_logs_type=file
 druid_indexer_logs_directory=/opt/shared/indexing-logs
 
-druid_monitoring_monitors=["org.apache.druid.java.util.metrics.JvmMonitor", "org.apache.druid.server.metrics.ServiceStatusMonitor"]
+druid_monitoring_monitors=["org.apache.druid.java.util.metrics.JvmMonitor", "org.apache.druid.java.util.metrics.JvmCpuMonitor", "org.apache.druid.java.util.metrics.JvmThreadsMonitor", "org.apache.druid.java.util.metrics.OshiSysMonitor", "org.apache.druid.server.metrics.ServiceStatusMonitor"]
 druid_emitter=noop
 druid_lookup_enableLookupSyncOnStartup=false
 druid_startup_logging_logProperties=true

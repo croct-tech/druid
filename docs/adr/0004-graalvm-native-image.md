@@ -20,11 +20,14 @@ default set is the one our cluster runs: `druid-basic-security`, `postgresql-met
 `druid-datasketches`, `druid-moving-average-query`, `druid-time-min-max`, `druid-stats`,
 `druid-kubernetes-overlord-extensions` and `prometheus-emitter`. All compiled-in extension modules are always
 active, found through the class path like Druid's embedded tests do, and the image keeps an empty `extensions/<name>`
-directory for each so that `druid.extensions.loadList` keeps validating. Reachability metadata comes from three
+directory for each so that `druid.extensions.loadList` keeps validating. Reachability metadata comes from four
 sources: the build scans every jar and registers all Druid classes, all service providers and the libraries known to
 load classes by name (`NativeImageBuildTool`), it runs a small cluster on a JVM with the GraalVM tracing agent and
-records what the services, peons, queries, lookups, supervisors and APIs touch (`trace.sh`), and a short hand-written
-list covers JDK classes Jackson instantiates.
+records what the services, peons, queries, lookups, supervisors and APIs touch (`trace.sh`), a short hand-written
+list covers JDK classes Jackson instantiates, and the metadata GraalVM publishes for JNA
+(`distribution/docker/native/config/jna`, from the `oracle/graalvm-reachability-metadata` repository) covers the JNI
+callbacks and the bundled `libjnidispatch.so` that JNA needs, plus the dynamic proxies for the libc and libudev
+interfaces OSHI loads.
 
 Two code changes make this possible, both neutral on a JVM:
 
@@ -78,9 +81,17 @@ deployment service; the default is the native image.
   GraalVM's serial collector, fixed at build time; `-XX:+UseG1GC` and friends are ignored. Without `-Xmx` the native
   runtime takes 80% of the container's memory for the heap, so always size the heap.
 - JavaScript (`druid.javascript.enabled`) does not work: the GraalVM JavaScript engine jars clash with the native
-  image builder and are left out. Monitors that depend on JNA (`OshiSysMonitor`) are untested, and `JvmMonitor`
-  cannot report per-thread allocation (`jvm/...` allocation metrics) because the native runtime's thread MXBean lacks
-  it.
+  image builder and are left out.
+- `JvmCpuMonitor` and `OshiSysMonitor` work. Both go through OSHI and JNA: JNA extracts `libjnidispatch.so` from
+  the image into `java.io.tmpdir` at start-up (so the temporary directory must be writable, as on a JVM) and calls libc
+  through a dynamic proxy. JNA's direct mapping is not supported by the native runtime, so `NativeIO` logs one
+  warning on the first segment download and copies without `posix_fadvise`, as it does on a JVM without JNA.
+  `JvmMonitor` cannot report per-thread allocation (`jvm/...` allocation metrics) because the native runtime's
+  thread MXBean lacks it. The trace, the benchmark and the Kubernetes smoke test run with all four monitors, so a
+  monitor that fails to start fails the build.
+- Segments compressed with LZ4, LZF and ZSTD can be read: the class-path rules register LZF's Unsafe-based decoder,
+  which the library instantiates by name, and zstd-jni's bundled native library, and the trace ingests a datasource
+  with LZF dimensions and ZSTD metrics.
 - Start-up takes a few seconds instead of tens of seconds. That exposed a benign race in the overlord: it can win the
   leader election before its segment metadata cache has started, log "Cache has not been started yet", surrender and
   win again a second later. Jersey also logs a JAXB stack trace at start-up (the JAXB runtime is not included and
