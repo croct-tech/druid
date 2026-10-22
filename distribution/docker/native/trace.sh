@@ -138,7 +138,9 @@ druid.indexer.logs.directory=$VAR/indexing-logs
 druid.selectors.indexing.serviceName=druid/overlord
 druid.selectors.coordinator.serviceName=druid/coordinator
 
-druid.monitoring.monitors=["org.apache.druid.java.util.metrics.JvmMonitor","org.apache.druid.server.metrics.ServiceStatusMonitor"]
+# All JVM and system monitors, so that the recording covers JNA, through which JvmCpuMonitor and OshiSysMonitor
+# reach libc.
+druid.monitoring.monitors=["org.apache.druid.java.util.metrics.JvmMonitor","org.apache.druid.java.util.metrics.JvmCpuMonitor","org.apache.druid.java.util.metrics.JvmThreadsMonitor","org.apache.druid.java.util.metrics.OshiSysMonitor","org.apache.druid.server.metrics.ServiceStatusMonitor"]
 druid.monitoring.emissionPeriod=PT10S
 druid.emitter=composing
 druid.emitter.composing.emitters=["logging","prometheus"]

@@ -102,7 +102,10 @@ RUN java -cp "$(ls /opt/druid/lib/asm-*.jar | head -1)" build/NativeImageBuildTo
 #    Guice injection points (Inject constructors, methods and fields, Provides methods) are registered in every jar.
 #    airline builds the command line (its own commands, such as help, are instantiated reflectively) and log4j
 #    configures its plugins through annotated factory methods and builder fields, for whichever appenders a
-#    log4j2.xml names, so both are registered in full rather than from the recording.
+#    log4j2.xml names, so both are registered in full rather than from the recording. JNA reads the fields of its
+#    Structure subclasses and instantiates them reflectively, so OSHI's and jna-platform's Linux bindings (behind
+#    JvmCpuMonitor and OshiSysMonitor) get constructors and fields; JNA's own JNI metadata and the proxies for the
+#    library interfaces OSHI loads are checked in under build/config/jna.
 RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java generate-config lib config/generated \
       --reflect-package org.apache.druid. \
       --reflect-package com.github.rvesse.airline. \
@@ -136,6 +139,12 @@ RUN java -cp "$(ls lib/asm-*.jar | head -1)" build/NativeImageBuildTool.java gen
       --reflect-package-constructors org.apache.curator. \
       --reflect-package-constructors org.apache.avro. \
       --reflect-package-constructors com.sun.jersey. \
+      --reflect-package oshi.jna. \
+      --reflect-fields oshi.jna. \
+      --reflect-package com.sun.jna.platform.linux. \
+      --reflect-fields com.sun.jna.platform.linux. \
+      --reflect-package com.sun.jna.platform.unix. \
+      --reflect-fields com.sun.jna.platform.unix. \
       --reflect-jar kubernetes-client- \
       --reflect-jar kubernetes-model-core- \
       --reflect-jar kubernetes-model-batch- \
