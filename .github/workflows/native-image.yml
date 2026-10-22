@@ -65,6 +65,14 @@ jobs:
           key: maven-croct-custom-32-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
           restore-keys: maven-croct-custom-32-
 
+      # Maven Central answers this runner with HTTP 429, so downloads go to Google's mirror of Central instead: the
+      # wrapper's through MVNW_REPOURL, and the build's and the Dockerfiles' (whose `mvn` runs in the build context)
+      # through .mvn/maven.config (docs/adr/0004-graalvm-native-image.md).
+      - name: Use the Maven Central mirror
+        run: |
+          echo "MVNW_REPOURL=https://maven-central.storage-download.googleapis.com/maven2" >> "$GITHUB_ENV"
+          echo "--settings=.github/maven-settings.xml" > .mvn/maven.config
+
       - name: Build the Druid distribution
         # Same build as the release workflow: the tarball both Dockerfiles consume, web console included.
         run: ./mvnw -B -T1C clean install -pl '!benchmarks' -Pdist,bundle-contrib-exts,skip-static-checks,skip-tests

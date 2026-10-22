@@ -48,6 +48,8 @@ needs less memory at the price of keeping more code, gives the builder a 64 GB h
 and runs in CI on the `croct-custom-32` runner (32 cores, 128 GB). That runner's workspace is one directory deeper than
 on GitHub-hosted runners, and `actions/cache` stores paths relative to the workspace, so jobs on it cache `~/.m2`
 under their own key: `setup-java`'s cache, which GitHub-hosted jobs also save, would restore outside `~/.m2`.
+Maven Central also rate-limits the runner (HTTP 429), so those jobs download from Google's mirror of Central
+(`.github/maven-settings.xml`).
 The `Native image` workflow builds the image on
 pull requests that touch the native build, runs the benchmark workload (`distribution/docker/native/bench`) against it
 and against the JVM image built from the same tarball, smoke-tests the Kubernetes task runner on a k3s cluster, and
