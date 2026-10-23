@@ -38,6 +38,7 @@ import org.apache.druid.indexing.seekablestream.extension.KafkaConfigOverrides;
 import org.apache.druid.indexing.seekablestream.supervisor.BoundedStreamConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.IdleConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.LagAggregator;
+import org.apache.druid.indexing.seekablestream.supervisor.ScheduleConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.autoscaler.AutoScalerConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.autoscaler.LagBasedAutoScalerConfig;
 import org.apache.druid.jackson.DefaultObjectMapper;
@@ -743,6 +744,40 @@ public class KafkaSupervisorIOConfigTest
 
     Assertions.assertFalse(config.isBounded());
     Assertions.assertNull(config.getBoundedStreamConfig());
+  }
+
+  @Test
+  public void testScheduledModeSerde() throws Exception
+  {
+    final String jsonStr = "{\n"
+                           + "  \"type\": \"kafka\",\n"
+                           + "  \"topic\": \"my-topic\",\n"
+                           + "  \"consumerProperties\": {\"bootstrap.servers\":\"localhost:9092\"},\n"
+                           + "  \"scheduleConfig\": {\"period\": \"PT4H\", \"origin\": \"1970-01-01T00:15:00Z\"}\n"
+                           + "}";
+
+    final KafkaSupervisorIOConfig config = mapper.readValue(jsonStr, KafkaSupervisorIOConfig.class);
+
+    Assertions.assertTrue(config.isScheduled());
+    Assertions.assertEquals(
+        new ScheduleConfig(Period.hours(4), DateTimes.of("1970-01-01T00:15:00Z")),
+        config.getScheduleConfig()
+    );
+    Assertions.assertEquals(config, mapper.readValue(mapper.writeValueAsString(config), KafkaSupervisorIOConfig.class));
+    Assertions.assertEquals(config, config.toBuilder().build());
+    Assertions.assertNotEquals(config, config.toBuilder().withScheduleConfig(null).build());
+  }
+
+  @Test
+  public void testUnscheduledModeOmitsScheduleConfig() throws Exception
+  {
+    final KafkaSupervisorIOConfig config = mapper.readValue(
+        "{\"topic\":\"my-topic\",\"consumerProperties\":{\"bootstrap.servers\":\"localhost:9092\"}}",
+        KafkaSupervisorIOConfig.class
+    );
+
+    Assertions.assertFalse(config.isScheduled());
+    Assertions.assertFalse(mapper.writeValueAsString(config).contains("scheduleConfig"));
   }
 
   @Test

@@ -514,6 +514,98 @@ public class SeekableStreamSupervisorIOConfigTest
   }
 
   @Test
+  public void testScheduledMode()
+  {
+    final ScheduleConfig scheduleConfig = new ScheduleConfig(Period.hours(4), null);
+    final SeekableStreamSupervisorIOConfig config = scheduledIOConfigBuilder(scheduleConfig).build();
+
+    Assertions.assertTrue(config.isScheduled());
+    Assertions.assertEquals(scheduleConfig, config.getScheduleConfig());
+    Assertions.assertEquals(config, config.toBuilder().build());
+    Assertions.assertFalse(scheduledIOConfigBuilder(null).build().isScheduled());
+  }
+
+  @Test
+  public void testScheduledModeRejectsBoundedStreamConfig()
+  {
+    final DruidException e = Assertions.assertThrows(
+        DruidException.class,
+        () -> scheduledIOConfigBuilder(new ScheduleConfig(Period.hours(4), null))
+            .withBoundedStreamConfig(new BoundedStreamConfig(Map.of("0", 0), Map.of("0", 10)))
+            .build()
+    );
+    assertInvalidInputException(e, "'scheduleConfig' cannot be combined with 'boundedStreamConfig'");
+  }
+
+  @Test
+  public void testScheduledModeRejectsEnabledIdleConfig()
+  {
+    final DruidException e = Assertions.assertThrows(
+        DruidException.class,
+        () -> scheduledIOConfigBuilder(new ScheduleConfig(Period.hours(4), null))
+            .withIdleConfig(new IdleConfig(true, null))
+            .build()
+    );
+    assertInvalidInputException(e, "'scheduleConfig' cannot be combined with an enabled 'idleConfig'");
+
+    Assertions.assertTrue(
+        scheduledIOConfigBuilder(new ScheduleConfig(Period.hours(4), null))
+            .withIdleConfig(new IdleConfig(false, null))
+            .build()
+            .isScheduled()
+    );
+  }
+
+  @Test
+  public void testScheduledModeRejectsEnabledAutoScaler()
+  {
+    final AutoScalerConfig autoScalerConfig = mock(AutoScalerConfig.class);
+    when(autoScalerConfig.getEnableTaskAutoScaler()).thenReturn(true);
+    when(autoScalerConfig.getTaskCountMin()).thenReturn(1);
+
+    final DruidException e = Assertions.assertThrows(
+        DruidException.class,
+        () -> scheduledIOConfigBuilder(new ScheduleConfig(Period.hours(4), null))
+            .withAutoScalerConfig(autoScalerConfig)
+            .build()
+    );
+    assertInvalidInputException(e, "'scheduleConfig' cannot be combined with an enabled 'autoScalerConfig'");
+  }
+
+  @Test
+  public void testScheduledModeRejectsLateMessageRejectionPeriod()
+  {
+    final DruidException e = Assertions.assertThrows(
+        DruidException.class,
+        () -> scheduledIOConfigBuilder(new ScheduleConfig(Period.hours(4), null))
+            .withLateMessageRejectionPeriod(Period.hours(1))
+            .build()
+    );
+    assertInvalidInputException(
+        e,
+        "'scheduleConfig' cannot be combined with 'lateMessageRejectionPeriod'."
+        + " Use 'lateMessageRejectionStartDateTime' instead."
+    );
+
+    Assertions.assertTrue(
+        scheduledIOConfigBuilder(new ScheduleConfig(Period.hours(4), null))
+            .withLateMessageRejectionStartDateTime(DateTimes.of("2026-01-01"))
+            .build()
+            .isScheduled()
+    );
+  }
+
+  private static SupervisorIOConfigBuilder.DefaultSupervisorIOConfigBuilder scheduledIOConfigBuilder(
+      @Nullable ScheduleConfig scheduleConfig
+  )
+  {
+    return new SupervisorIOConfigBuilder.DefaultSupervisorIOConfigBuilder()
+        .withStream("stream")
+        .withLagAggregator(LagAggregator.DEFAULT)
+        .withScheduleConfig(scheduleConfig);
+  }
+
+  @Test
   public void testUnboundedModeByDefault()
   {
     LagAggregator lagAggregator = mock(LagAggregator.class);

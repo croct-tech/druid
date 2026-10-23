@@ -134,6 +134,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 public class SeekableStreamSupervisorStateTest extends EasyMockSupport
 {
@@ -3052,6 +3054,371 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
     Assertions.assertEquals(List.of(20, 20), supervisor.computeUnassignedServerPriorities(taskGroup3, 2));
 
     verifyAll();
+  }
+
+  @Test
+  public void testScheduledSupervisor_waitsForNextCycleStart()
+  {
+    mockScheduledSpec(scheduleStartingIn(Period.hours(1)), true);
+    mockStream(Map.of("0", "20"));
+    mockNoMetadata();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    replayAll();
+
+    final TestSeekableStreamSupervisor supervisor = new ScheduledTestSeekableStreamSupervisor();
+    supervisor.start();
+    supervisor.runInternal();
+    supervisor.runInternal();
+
+    // No task was added to the queue, as the first cycle starts in an hour.
+    Assertions.assertEquals(BasicState.IDLE, supervisor.stateManager.getSupervisorState());
+    verifyAll();
+  }
+
+  @Test
+  public void testScheduledSupervisor_readsUpToTargetOffsets() throws InterruptedException
+  {
+    mockScheduledSpec(SHORT_SCHEDULE, true);
+    mockStream(Map.of("0", "20", "1", "15"));
+    // Partition 0 has been read up to the latest offset, partition 1 up to offset 5.
+    mockCommittedOffsets(Map.of("0", "20", "1", "5"));
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    final Capture<Task> submitted = Capture.newInstance();
+    EasyMock.expect(taskQueue.add(EasyMock.capture(submitted))).andReturn(true);
+    replayAll();
+
+    final TestSeekableStreamSupervisor supervisor = new ScheduledTestSeekableStreamSupervisor();
+    supervisor.start();
+    waitForNextCycleStart();
+    supervisor.runInternal();
+
+    final SeekableStreamIndexTaskIOConfig<String, String> taskIoConfig =
+        ((TestSeekableStreamIndexTask) submitted.getValue()).getIOConfig();
+    Assertions.assertEquals(
+        Map.of("0", "20", "1", "5"),
+        taskIoConfig.getStartSequenceNumbers().getPartitionSequenceNumberMap()
+    );
+    // Partition 0 has nothing to read, so its end offset is its start offset.
+    Assertions.assertEquals(
+        Map.of("0", "20", "1", "15"),
+        taskIoConfig.getEndSequenceNumbers().getPartitionSequenceNumberMap()
+    );
+    Assertions.assertNotEquals(BasicState.IDLE, supervisor.stateManager.getSupervisorState());
+    verifyAll();
+  }
+
+  @Test
+  public void testScheduledSupervisor_endsCycleWithNothingToRead() throws InterruptedException
+  {
+    mockScheduledSpec(SHORT_SCHEDULE, true);
+    mockStream(Map.of("0", "20"));
+    mockCommittedOffsets(Map.of("0", "20"));
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    replayAll();
+
+    final TestSeekableStreamSupervisor supervisor = new ScheduledTestSeekableStreamSupervisor();
+    supervisor.start();
+    supervisor.runInternal();
+    waitForNextCycleStart();
+    supervisor.runInternal();
+
+    // The cycle started and ended in the same run without adding tasks to the queue.
+    Assertions.assertEquals(BasicState.IDLE, supervisor.stateManager.getSupervisorState());
+    verifyAll();
+  }
+
+  @Test
+  public void testScheduledSupervisor_fromLatestOffset_commitsLatestOffsetsOfUncommittedPartitions() throws Exception
+  {
+    mockScheduledSpec(scheduleStartingIn(Period.hours(1)), false);
+    mockStream(Map.of("0", "20", "1", "15"));
+    mockCommittedOffsets(Map.of("0", "3"));
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    final Capture<DataSourceMetadata> written = Capture.newInstance();
+    EasyMock.expect(indexerMetadataStorageCoordinator.resetDataSourceMetadata(
+        EasyMock.eq(SUPERVISOR_ID),
+        EasyMock.capture(written)
+    )).andReturn(true);
+    replayAll();
+
+    final TestSeekableStreamSupervisor supervisor = new ScheduledTestSeekableStreamSupervisor();
+    supervisor.start();
+    supervisor.runInternal();
+
+    // Partition 1 is pinned at its latest offset; partition 0 keeps its committed offset.
+    Assertions.assertEquals(
+        Map.of("0", "3", "1", "15"),
+        ((SeekableStreamDataSourceMetadata<?, ?>) written.getValue()).getSeekableStreamSequenceNumbers()
+                                                                     .getPartitionSequenceNumberMap()
+    );
+    Assertions.assertEquals(BasicState.IDLE, supervisor.stateManager.getSupervisorState());
+    verifyAll();
+  }
+
+  @Test
+  public void testScheduledSupervisor_fromLatestOffset_insertsLatestOffsetsWithoutMetadata()
+  {
+    mockScheduledSpec(scheduleStartingIn(Period.hours(1)), false);
+    mockStream(Map.of("0", "20"));
+    mockNoMetadata();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    final Capture<DataSourceMetadata> written = Capture.newInstance();
+    EasyMock.expect(indexerMetadataStorageCoordinator.insertDataSourceMetadata(
+        EasyMock.eq(SUPERVISOR_ID),
+        EasyMock.capture(written)
+    )).andReturn(true);
+    replayAll();
+
+    final TestSeekableStreamSupervisor supervisor = new ScheduledTestSeekableStreamSupervisor();
+    supervisor.start();
+    supervisor.runInternal();
+
+    Assertions.assertEquals(
+        Map.of("0", "20"),
+        ((SeekableStreamDataSourceMetadata<?, ?>) written.getValue()).getSeekableStreamSequenceNumbers()
+                                                                     .getPartitionSequenceNumberMap()
+    );
+    verifyAll();
+  }
+
+  @Test
+  public void testScheduledSupervisor_resumesCycleOfDiscoveredTaskAndEndsItWhenTheTaskSucceeds()
+  {
+    final SeekableStreamSupervisorIOConfig ioConfig = mockScheduledSpec(scheduleStartingIn(Period.hours(1)), true);
+    mockStream(Map.of("0", "20"));
+    // An earlier task of the cycle read offsets [0, 5) and is publishing; the current one reads [5, 20).
+    final TestSeekableStreamIndexTask publishingTask = createTestTask(
+        "task0",
+        "0",
+        null,
+        createTaskIoConfigExt(0, Map.of("0", "0"), Map.of("0", "5"), "test", null, null, Set.of(), ioConfig),
+        recordSupplier
+    );
+    final TestSeekableStreamIndexTask readingTask = createTestTask(
+        "task1",
+        "0",
+        null,
+        createTaskIoConfigExt(0, Map.of("0", "5"), Map.of("0", "20"), "test", null, null, Set.of(), ioConfig),
+        recordSupplier
+    );
+    // Both tasks are running in the first run; by the second, both have succeeded and committed their end offsets.
+    final AtomicBoolean succeeded = new AtomicBoolean(false);
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(SUPERVISOR_ID)).andAnswer(
+        () -> committedMetadata(Map.of("0", succeeded.get() ? "20" : "0"))
+    ).anyTimes();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andAnswer(
+        () -> succeeded.get() ? Map.of() : Map.of(publishingTask.getId(), publishingTask, readingTask.getId(), readingTask)
+    ).anyTimes();
+    for (TestSeekableStreamIndexTask task : List.of(publishingTask, readingTask)) {
+      EasyMock.expect(taskStorage.getStatus(task.getId())).andAnswer(
+          () -> Optional.of(succeeded.get() ? TaskStatus.success(task.getId()) : TaskStatus.running(task.getId()))
+      ).anyTimes();
+      EasyMock.expect(taskStorage.getTask(task.getId())).andReturn(Optional.of(task)).anyTimes();
+    }
+    EasyMock.expect(indexTaskClient.getStatusAsync("task0"))
+            .andReturn(Futures.immediateFuture(SeekableStreamIndexTaskRunner.Status.PUBLISHING))
+            .anyTimes();
+    EasyMock.expect(indexTaskClient.getEndOffsetsAsync("task0"))
+            .andReturn(Futures.immediateFuture(Map.of("0", "5")))
+            .anyTimes();
+    mockReadingTaskClient(Map.of("0", "5"));
+    replayAll();
+
+    final TestSeekableStreamSupervisor supervisor = new ScheduledTestSeekableStreamSupervisor();
+    supervisor.start();
+    supervisor.runInternal();
+    // The supervisor keeps the discovered tasks' cycle going instead of waiting for the next cycle start.
+    Assertions.assertNotEquals(BasicState.IDLE, supervisor.stateManager.getSupervisorState());
+
+    succeeded.set(true);
+    supervisor.runInternal();
+    // The next task group starts from the committed offset rather than from where the publishing task stopped, and
+    // that offset is the target, so the cycle ends without adding a task to the queue.
+    Assertions.assertEquals(BasicState.IDLE, supervisor.stateManager.getSupervisorState());
+    verifyAll();
+  }
+
+  @Test
+  public void testScheduledSupervisor_doesNotRereadOffsetsOfTaskDiscoveredAsPublishing() throws InterruptedException
+  {
+    mockScheduledSpec(SHORT_SCHEDULE, true);
+    mockStream(Map.of("0", "20"));
+    mockCommittedOffsets(Map.of("0", "5"));
+    final Capture<Task> submitted = Capture.newInstance();
+    // The task created in the first run is discovered in the second run, after it has finished reading.
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andAnswer(
+        () -> submitted.hasCaptured() ? Map.of(submitted.getValue().getId(), submitted.getValue()) : Map.of()
+    ).anyTimes();
+    EasyMock.expect(taskStorage.getStatus(EasyMock.anyString())).andAnswer(
+        () -> Optional.of(TaskStatus.running(submitted.getValue().getId()))
+    ).anyTimes();
+    EasyMock.expect(taskStorage.getTask(EasyMock.anyString())).andAnswer(
+        () -> Optional.of(submitted.getValue())
+    ).anyTimes();
+    EasyMock.expect(indexTaskClient.getStatusAsync(EasyMock.anyString()))
+            .andReturn(Futures.immediateFuture(SeekableStreamIndexTaskRunner.Status.PUBLISHING))
+            .anyTimes();
+    EasyMock.expect(indexTaskClient.getEndOffsetsAsync(EasyMock.anyString()))
+            .andReturn(Futures.immediateFuture(Map.of("0", "20")))
+            .anyTimes();
+    EasyMock.expect(taskRunner.getRunningTasks()).andReturn(ImmutableList.of()).anyTimes();
+    // Exactly one task is added: the second run must not create another task for the same offsets.
+    EasyMock.expect(taskQueue.add(EasyMock.capture(submitted))).andReturn(true).once();
+    replayAll();
+
+    final TestSeekableStreamSupervisor supervisor = new ScheduledTestSeekableStreamSupervisor();
+    supervisor.start();
+    waitForNextCycleStart();
+    supervisor.runInternal();
+    supervisor.runInternal();
+
+    verifyAll();
+  }
+
+  /**
+   * A schedule whose cycles start every 100 milliseconds, so that a cycle starts once {@link #waitForNextCycleStart()}
+   * returns.
+   */
+  private static final ScheduleConfig SHORT_SCHEDULE = new ScheduleConfig(Period.millis(100), null);
+
+  private static void waitForNextCycleStart() throws InterruptedException
+  {
+    Thread.sleep(SHORT_SCHEDULE.getPeriod().toStandardDuration().getMillis() + 50);
+  }
+
+  /**
+   * Returns a daily schedule whose next cycle starts {@code delay} from now.
+   */
+  private static ScheduleConfig scheduleStartingIn(Period delay)
+  {
+    return new ScheduleConfig(Period.days(1), DateTimes.nowUtc().plus(delay));
+  }
+
+  private SeekableStreamSupervisorIOConfig mockScheduledSpec(ScheduleConfig scheduleConfig, boolean useEarliestOffset)
+  {
+    final SeekableStreamSupervisorIOConfig ioConfig =
+        new SupervisorIOConfigBuilder.DefaultSupervisorIOConfigBuilder()
+            .withStream(STREAM)
+            .withInputFormat(new JsonInputFormat(new JSONPathSpec(true, List.of()), Map.of(), false, false, false))
+            .withReplicas(1)
+            .withTaskCount(1)
+            .withTaskDuration(new Period("PT1H"))
+            .withStartDelay(new Period("P1D"))
+            .withSupervisorRunPeriod(new Period("PT30S"))
+            .withUseEarliestSequenceNumber(useEarliestOffset)
+            .withCompletionTimeout(new Period("PT30M"))
+            .withLagAggregator(LagAggregator.DEFAULT)
+            .withScheduleConfig(scheduleConfig)
+            .build();
+
+    EasyMock.reset(spec);
+    EasyMock.expect(spec.getId()).andReturn(SUPERVISOR_ID).anyTimes();
+    EasyMock.expect(spec.getSupervisorStateManagerConfig()).andReturn(supervisorConfig).anyTimes();
+    EasyMock.expect(spec.getDataSchema()).andReturn(getDataSchema()).anyTimes();
+    EasyMock.expect(spec.getIoConfig()).andReturn(ioConfig).anyTimes();
+    EasyMock.expect(spec.getTuningConfig()).andReturn(getTuningConfig()).anyTimes();
+    EasyMock.expect(spec.getEmitter()).andReturn(emitter).anyTimes();
+    EasyMock.expect(spec.getContextValue(DruidMetrics.TAGS)).andReturn(METRIC_TAGS).anyTimes();
+    EasyMock.expect(spec.isSuspended()).andReturn(false).anyTimes();
+    EasyMock.reset(indexerMetadataStorageCoordinator);
+    return ioConfig;
+  }
+
+  /**
+   * Mocks a stream whose partitions have the given latest offsets and start at offset 0.
+   */
+  private void mockStream(Map<String, String> latestOffsets)
+  {
+    EasyMock.reset(recordSupplier);
+    EasyMock.expect(recordSupplier.getPartitionIds(STREAM)).andReturn(latestOffsets.keySet()).anyTimes();
+    EasyMock.expect(recordSupplier.getAssignment()).andReturn(
+        latestOffsets.keySet().stream().map(partition -> StreamPartition.of(STREAM, partition)).collect(Collectors.toSet())
+    ).anyTimes();
+    recordSupplier.assign(EasyMock.anyObject());
+    EasyMock.expectLastCall().anyTimes();
+    final Capture<Set<StreamPartition<String>>> requested = Capture.newInstance(CaptureType.LAST);
+    EasyMock.expect(recordSupplier.getLatestSequenceNumbers(EasyMock.capture(requested))).andAnswer(
+        () -> requested.getValue()
+                       .stream()
+                       .collect(Collectors.toMap(StreamPartition::getPartitionId, p -> latestOffsets.get(p.getPartitionId())))
+    ).anyTimes();
+    EasyMock.expect(recordSupplier.getEarliestSequenceNumber(EasyMock.anyObject())).andReturn("0").anyTimes();
+    EasyMock.expect(recordSupplier.isOffsetAvailable(EasyMock.anyObject(), EasyMock.anyObject())).andReturn(true).anyTimes();
+  }
+
+  private void mockCommittedOffsets(Map<String, String> committedOffsets)
+  {
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(SUPERVISOR_ID))
+            .andReturn(committedMetadata(committedOffsets))
+            .anyTimes();
+  }
+
+  private void mockNoMetadata()
+  {
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(SUPERVISOR_ID)).andReturn(null).anyTimes();
+  }
+
+  private static TestSeekableStreamDataSourceMetadata committedMetadata(Map<String, String> committedOffsets)
+  {
+    return new TestSeekableStreamDataSourceMetadata(new SeekableStreamEndSequenceNumbers<>(STREAM, committedOffsets));
+  }
+
+  private void mockReadingTaskClient(Map<String, String> startOffsets)
+  {
+    final TreeMap<Integer, Map<String, String>> checkpoints = new TreeMap<>();
+    checkpoints.put(0, startOffsets);
+    EasyMock.expect(indexTaskClient.getCheckpointsAsync(EasyMock.anyString(), EasyMock.anyBoolean()))
+            .andReturn(Futures.immediateFuture(checkpoints))
+            .anyTimes();
+    EasyMock.expect(indexTaskClient.getStatusAsync(EasyMock.anyString()))
+            .andReturn(Futures.immediateFuture(SeekableStreamIndexTaskRunner.Status.READING))
+            .anyTimes();
+    EasyMock.expect(indexTaskClient.getStartTimeAsync(EasyMock.anyString()))
+            .andReturn(Futures.immediateFuture(DateTimes.nowUtc()))
+            .anyTimes();
+    EasyMock.expect(indexTaskClient.stopAsync(EasyMock.anyString(), EasyMock.anyBoolean()))
+            .andReturn(Futures.immediateFuture(true))
+            .anyTimes();
+    EasyMock.expect(taskRunner.getRunningTasks()).andReturn(ImmutableList.of()).anyTimes();
+  }
+
+  /**
+   * A test supervisor that can write offsets to the metadata store, as scheduled supervisors do for partitions without
+   * committed offsets.
+   */
+  private class ScheduledTestSeekableStreamSupervisor extends TestSeekableStreamSupervisor
+  {
+    @Override
+    public SeekableStreamDataSourceMetadata<String, String> createDataSourceMetaDataForReset(
+        String stream,
+        Map<String, String> map
+    )
+    {
+      return committedMetadata(map);
+    }
+
+    /**
+     * Orders the not-set marker before every offset, as Kafka's numeric marker is. Discovering a publishing task
+     * compares its end offsets with the offsets the supervisor knows, which may still be the marker.
+     */
+    @Override
+    protected OrderedSequenceNumber<String> makeSequenceNumber(String seq, boolean isExclusive)
+    {
+      // codeql[java/inconsistent-compareto-and-equals]
+      return new OrderedSequenceNumber<>(seq, isExclusive)
+      {
+        @Override
+        public int compareTo(OrderedSequenceNumber<String> o)
+        {
+          return toNumber(this.get()).compareTo(toNumber(o.get()));
+        }
+      };
+    }
+
+    private BigInteger toNumber(String seq)
+    {
+      return getNotSetMarker().equals(seq) ? BigInteger.valueOf(-1) : new BigInteger(seq);
+    }
   }
 
   /**

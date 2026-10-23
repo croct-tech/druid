@@ -32,6 +32,7 @@ import org.apache.druid.indexing.seekablestream.extension.KafkaConfigOverrides;
 import org.apache.druid.indexing.seekablestream.supervisor.BoundedStreamConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.IdleConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.LagAggregator;
+import org.apache.druid.indexing.seekablestream.supervisor.ScheduleConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.SeekableStreamSupervisorIOConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.autoscaler.AutoScalerConfig;
 import org.apache.druid.jackson.StrictIntegerDeserializer;
@@ -92,7 +93,8 @@ public class KafkaSupervisorIOConfig extends SeekableStreamSupervisorIOConfig
       @Nullable @JsonProperty("serverPriorityToReplicas") Map<Integer, Integer> serverPriorityToReplicas,
       @Nullable @JsonProperty("boundedStreamConfig") BoundedStreamConfig boundedStreamConfig,
       @Nullable @JsonProperty("partitionIds")
-      @JsonDeserialize(contentUsing = StrictIntegerDeserializer.class) Set<Integer> partitionIds
+      @JsonDeserialize(contentUsing = StrictIntegerDeserializer.class) Set<Integer> partitionIds,
+      @Nullable @JsonProperty("scheduleConfig") ScheduleConfig scheduleConfig
   )
   {
     super(
@@ -113,7 +115,8 @@ public class KafkaSupervisorIOConfig extends SeekableStreamSupervisorIOConfig
         idleConfig,
         stopTaskCount,
         serverPriorityToReplicas,
-        boundedStreamConfig
+        boundedStreamConfig,
+        scheduleConfig
     );
 
     this.headerBasedFilterConfig = headerBasedFilterConfig;
@@ -136,6 +139,68 @@ public class KafkaSupervisorIOConfig extends SeekableStreamSupervisorIOConfig
     }
     this.partitionIds = partitionIds == null ? null : ImmutableSortedSet.copyOf(partitionIds);
     this.emitTimeLagMetrics = Configs.valueOrDefault(emitTimeLagMetrics, false);
+  }
+
+  /**
+   * Backwards-compatible overload without {@code scheduleConfig} (defaults to null), retained so that callers compiled
+   * against the previous signature keep working.
+   */
+  public KafkaSupervisorIOConfig(
+      String topic,
+      String topicPattern,
+      InputFormat inputFormat,
+      Integer replicas,
+      Integer taskCount,
+      Period taskDuration,
+      Map<String, Object> consumerProperties,
+      @Nullable AutoScalerConfig autoScalerConfig,
+      @Nullable LagAggregator lagAggregator,
+      Long pollTimeout,
+      Period startDelay,
+      Period period,
+      Boolean useEarliestOffset,
+      Period completionTimeout,
+      Period lateMessageRejectionPeriod,
+      Period earlyMessageRejectionPeriod,
+      DateTime lateMessageRejectionStartDateTime,
+      KafkaConfigOverrides configOverrides,
+      KafkaHeaderBasedFilterConfig headerBasedFilterConfig,
+      IdleConfig idleConfig,
+      Integer stopTaskCount,
+      @Nullable Boolean emitTimeLagMetrics,
+      @Nullable Map<Integer, Integer> serverPriorityToReplicas,
+      @Nullable BoundedStreamConfig boundedStreamConfig,
+      @Nullable Set<Integer> partitionIds
+  )
+  {
+    this(
+        topic,
+        topicPattern,
+        inputFormat,
+        replicas,
+        taskCount,
+        taskDuration,
+        consumerProperties,
+        autoScalerConfig,
+        lagAggregator,
+        pollTimeout,
+        startDelay,
+        period,
+        useEarliestOffset,
+        completionTimeout,
+        lateMessageRejectionPeriod,
+        earlyMessageRejectionPeriod,
+        lateMessageRejectionStartDateTime,
+        configOverrides,
+        headerBasedFilterConfig,
+        idleConfig,
+        stopTaskCount,
+        emitTimeLagMetrics,
+        serverPriorityToReplicas,
+        boundedStreamConfig,
+        partitionIds,
+        null
+    );
   }
 
   /**
@@ -293,6 +358,7 @@ public class KafkaSupervisorIOConfig extends SeekableStreamSupervisorIOConfig
            ", headerBasedFilterConfig=" + headerBasedFilterConfig +
            ", idleConfig=" + getIdleConfig() +
            ", stopTaskCount=" + getStopTaskCount() +
+           ", scheduleConfig=" + getScheduleConfig() +
            '}';
   }
 

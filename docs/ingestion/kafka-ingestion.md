@@ -128,6 +128,7 @@ For configuration properties shared across all streaming ingestion methods, refe
 |`useEarliestOffset`|Boolean|If a supervisor is managing a datasource for the first time, it obtains a set of starting offsets from Kafka. This flag determines whether the supervisor retrieves the earliest or latest offsets in Kafka. Under normal circumstances, subsequent tasks start from where the previous segments ended so this flag is only used on the first run.|No|`false`|
 |`headerBasedFilterConfig`|Object|Configuration for filtering Kafka records based on their headers before ingestion. See [Header-based filtering](#header-based-filtering) for more details.|No|null|
 |`idleConfig`|Object|Defines how and when the Kafka supervisor can become idle. See [Idle configuration](#idle-configuration) for more details.|No|null|
+|`scheduleConfig`|Object|Makes the supervisor ingest in scheduled cycles instead of continuously. See [Scheduled ingestion](#scheduled-ingestion) for more details.|No|null|
 
 #### Ingest from multiple topics
 
@@ -262,6 +263,57 @@ The following example shows a supervisor spec with idle configuration enabled:
 }
 ```
 </details>
+
+#### Scheduled ingestion
+
+With `scheduleConfig`, the supervisor ingests in ingestion cycles instead of continuously. Use it for datasources that don't need real-time data, where tasks that wait for records most of the time cost more than they are worth.
+
+Each cycle starts at a time that depends only on `period` and `origin`: cycles start at `origin`, `origin + period`, `origin + 2 * period`, and so on. When a cycle starts, the supervisor records the latest offset of every partition as the cycle's target offsets. It then creates tasks that read from the committed offsets up to the target offsets and stop there, as with a bounded stream. Once every task has published its segments, the cycle ends, and the supervisor is `IDLE` and creates no tasks until the next cycle starts. A cycle with nothing to read ends without creating tasks.
+
+The following table outlines the configuration options for `scheduleConfig`:
+
+|Property|Type|Description|Required|Default|
+|--------|----|-----------|--------|-------|
+|`period`|ISO 8601 period|The time between the starts of two cycles. It must have a fixed length, so it cannot contain months or years.|Yes||
+|`origin`|ISO 8601 date time|A time at which a cycle starts. Give supervisors different origins to stagger their cycles so that they don't all create tasks at the same moment.|No|`1970-01-01T00:00:00Z`|
+
+Keep the following in mind:
+
+- Tasks read toward the target offsets as usual: `taskCount`, `replicas`, and `taskDuration` apply. If a cycle has more data than a task reads in `taskDuration`, the supervisor rolls the task over and the next task continues toward the same target offsets.
+- If a cycle is still running when the next one should start, the next cycle starts as soon as the running one ends. Start times that pass while a cycle runs collapse into that single cycle.
+- If the Overlord restarts during a cycle, the supervisor finishes the cycle of the tasks that are still reading. If no task is reading, it waits for the next cycle, which reads whatever the interrupted cycle left. Submitting a supervisor spec and resuming a suspended supervisor also wait for the next cycle.
+- When `useEarliestOffset` is `false`, the supervisor commits the latest offset of every partition without committed offsets as soon as it starts, so the first cycle reads the records published since then.
+- Kafka must retain records for longer than `period` plus the time a cycle takes, or records expire before a cycle reads them.
+- Lag grows between cycles. Alerts on the lag of a scheduled supervisor must allow for a whole `period` of records.
+
+You can't combine `scheduleConfig` with `boundedStreamConfig`, an enabled `idleConfig`, an enabled `autoScalerConfig`, or `lateMessageRejectionPeriod`. The late message rejection period is measured from the time a task is created, so it would drop most of a cycle's records. You can use `lateMessageRejectionStartDateTime` instead.
+
+The following example shows a supervisor spec that ingests every four hours, at a quarter past midnight, 4 AM, 8 AM, and so on (UTC):
+
+```json
+{
+  "type": "kafka",
+  "spec": {
+    "dataSchema": {...},
+    "ioConfig": {
+      "topic": "metrics",
+      "inputFormat": {
+        "type": "json"
+      },
+      "consumerProperties": {
+        "bootstrap.servers": "localhost:9092"
+      },
+      "taskCount": 1,
+      "taskDuration": "PT1H",
+      "scheduleConfig": {
+        "period": "PT4H",
+        "origin": "1970-01-01T00:15:00Z"
+      }
+    },
+    "tuningConfig": {...}
+  }
+}
+```
 
 #### Header-based filtering
 
