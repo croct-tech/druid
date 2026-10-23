@@ -74,6 +74,7 @@ import org.apache.druid.indexing.seekablestream.common.RecordSupplier;
 import org.apache.druid.indexing.seekablestream.common.StreamException;
 import org.apache.druid.indexing.seekablestream.supervisor.BoundedStreamConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.IdleConfig;
+import org.apache.druid.indexing.seekablestream.supervisor.ScheduleConfig;
 import org.apache.druid.indexing.seekablestream.supervisor.SeekableStreamSupervisor;
 import org.apache.druid.indexing.seekablestream.supervisor.SeekableStreamSupervisorSpec;
 import org.apache.druid.indexing.seekablestream.supervisor.SeekableStreamSupervisorStateManager;
@@ -102,9 +103,11 @@ import org.apache.druid.server.security.ResourceType;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.NewPartitions;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.easymock.Capture;
@@ -6923,6 +6926,345 @@ public class KafkaSupervisorTest extends EasyMockSupport
             null,
             dataSchema,
             tuningConfig,
+            kafkaSupervisorIOConfig,
+            null,
+            false,
+            taskStorage,
+            taskMaster,
+            indexerMetadataStorageCoordinator,
+            taskClientFactory,
+            OBJECT_MAPPER,
+            new NoopServiceEmitter(),
+            new DruidMonitorSchedulerConfig(),
+            rowIngestionMetersFactory,
+            supervisorConfig
+        ),
+        rowIngestionMetersFactory
+    );
+  }
+
+  @Test
+  public void testScheduledSupervisor_waitsForNextCycleStart() throws Exception
+  {
+    supervisor = getTestableSupervisorWithScheduleConfig(scheduleStartingIn(Period.hours(1)), true);
+    addSomeEvents(10);
+
+    EasyMock.expect(taskMaster.getTaskQueue()).andReturn(Optional.of(taskQueue)).anyTimes();
+    EasyMock.expect(taskMaster.getTaskRunner()).andReturn(Optional.of(taskRunner)).anyTimes();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
+        new KafkaDataSourceMetadata(null)
+    ).anyTimes();
+    taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
+    replayAll();
+
+    supervisor.start();
+    supervisor.runInternal();
+    supervisor.runInternal();
+    verifyAll();
+
+    // No task was added to the queue, as the first cycle starts in an hour.
+    Assertions.assertEquals(SupervisorStateManager.BasicState.IDLE, supervisor.getState());
+  }
+
+  @Test
+  public void testScheduledSupervisor_readsUpToTargetOffsets() throws Exception
+  {
+    supervisor = getTestableSupervisorWithScheduleConfig(SHORT_SCHEDULE, true);
+    addSomeEvents(10);
+    final Map<KafkaTopicPartition, Long> latestOffsets = getLatestOffsets();
+    final KafkaTopicPartition partition0 = new KafkaTopicPartition(false, topic, 0);
+    final KafkaTopicPartition partition1 = new KafkaTopicPartition(false, topic, 1);
+    final KafkaTopicPartition partition2 = new KafkaTopicPartition(false, topic, 2);
+
+    // Partition 0 has already been read up to the latest offset, partition 1 halfway; partition 2 has no offset.
+    final Map<KafkaTopicPartition, Long> committedOffsets = Map.of(partition0, latestOffsets.get(partition0), partition1, 5L);
+
+    final Capture<KafkaIndexTask> captured = Capture.newInstance();
+    EasyMock.expect(taskMaster.getTaskQueue()).andReturn(Optional.of(taskQueue)).anyTimes();
+    EasyMock.expect(taskMaster.getTaskRunner()).andReturn(Optional.of(taskRunner)).anyTimes();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
+        new KafkaDataSourceMetadata(new SeekableStreamEndSequenceNumbers<>(topic, committedOffsets))
+    ).anyTimes();
+    EasyMock.expect(taskQueue.add(EasyMock.capture(captured))).andReturn(true);
+    taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
+    replayAll();
+
+    supervisor.start();
+    waitForNextCycleStart();
+    supervisor.runInternal();
+    verifyAll();
+
+    final KafkaIndexTaskIOConfig taskConfig = captured.getValue().getIOConfig();
+    Assertions.assertEquals(
+        Map.of(partition0, latestOffsets.get(partition0), partition1, 5L, partition2, 0L),
+        taskConfig.getStartSequenceNumbers().getPartitionSequenceNumberMap()
+    );
+    // Partition 0 has nothing to read, so its end offset is its start offset.
+    Assertions.assertEquals(latestOffsets, taskConfig.getEndSequenceNumbers().getPartitionSequenceNumberMap());
+    Assertions.assertNotEquals(SupervisorStateManager.BasicState.IDLE, supervisor.getState());
+  }
+
+  @Test
+  public void testScheduledSupervisor_endsCycleWithNothingToRead() throws Exception
+  {
+    supervisor = getTestableSupervisorWithScheduleConfig(SHORT_SCHEDULE, true);
+    addSomeEvents(10);
+
+    EasyMock.expect(taskMaster.getTaskQueue()).andReturn(Optional.of(taskQueue)).anyTimes();
+    EasyMock.expect(taskMaster.getTaskRunner()).andReturn(Optional.of(taskRunner)).anyTimes();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
+        new KafkaDataSourceMetadata(new SeekableStreamEndSequenceNumbers<>(topic, getLatestOffsets()))
+    ).anyTimes();
+    taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
+    replayAll();
+
+    supervisor.start();
+    supervisor.runInternal();
+    waitForNextCycleStart();
+    supervisor.runInternal();
+    verifyAll();
+
+    // The cycle started and ended in the same run without adding tasks to the queue.
+    Assertions.assertEquals(SupervisorStateManager.BasicState.IDLE, supervisor.getState());
+  }
+
+  @Test
+  public void testScheduledSupervisor_fromLatestOffset_commitsLatestOffsetsOfUncommittedPartitions() throws Exception
+  {
+    supervisor = getTestableSupervisorWithScheduleConfig(scheduleStartingIn(Period.hours(1)), false);
+    addSomeEvents(10);
+    final KafkaTopicPartition partition0 = new KafkaTopicPartition(false, topic, 0);
+    final Map<KafkaTopicPartition, Long> latestOffsets = getLatestOffsets();
+
+    EasyMock.expect(taskMaster.getTaskQueue()).andReturn(Optional.of(taskQueue)).anyTimes();
+    EasyMock.expect(taskMaster.getTaskRunner()).andReturn(Optional.of(taskRunner)).anyTimes();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    // Partition 0 has a committed offset; partitions 1 and 2 don't.
+    final KafkaDataSourceMetadata committedMetadata = new KafkaDataSourceMetadata(
+        new SeekableStreamEndSequenceNumbers<>(topic, Map.of(partition0, 3L))
+    );
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE))
+            .andReturn(committedMetadata)
+            .anyTimes();
+    final Map<KafkaTopicPartition, Long> expectedOffsets = new HashMap<>(latestOffsets);
+    expectedOffsets.put(partition0, 3L);
+    EasyMock.expect(
+        indexerMetadataStorageCoordinator.resetDataSourceMetadata(
+            DATASOURCE,
+            new KafkaDataSourceMetadata(new SeekableStreamEndSequenceNumbers<>(topic, expectedOffsets))
+        )
+    ).andReturn(true);
+    taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
+    replayAll();
+
+    supervisor.start();
+    supervisor.runInternal();
+    verifyAll();
+
+    Assertions.assertEquals(SupervisorStateManager.BasicState.IDLE, supervisor.getState());
+  }
+
+  @Test
+  public void testScheduledSupervisor_fromLatestOffset_insertsLatestOffsetsWithoutMetadata() throws Exception
+  {
+    supervisor = getTestableSupervisorWithScheduleConfig(scheduleStartingIn(Period.hours(1)), false);
+    addSomeEvents(10);
+
+    EasyMock.expect(taskMaster.getTaskQueue()).andReturn(Optional.of(taskQueue)).anyTimes();
+    EasyMock.expect(taskMaster.getTaskRunner()).andReturn(Optional.of(taskRunner)).anyTimes();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(null).anyTimes();
+    EasyMock.expect(
+        indexerMetadataStorageCoordinator.insertDataSourceMetadata(
+            DATASOURCE,
+            new KafkaDataSourceMetadata(new SeekableStreamEndSequenceNumbers<>(topic, getLatestOffsets()))
+        )
+    ).andReturn(true);
+    taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
+    replayAll();
+
+    supervisor.start();
+    supervisor.runInternal();
+    verifyAll();
+  }
+
+  @Test
+  public void testScheduledSupervisor_resumesCycleOfDiscoveredTasks() throws Exception
+  {
+    supervisor = getTestableSupervisorWithScheduleConfig(scheduleStartingIn(Period.hours(1)), true);
+    addSomeEvents(10);
+
+    final DateTime now = DateTimes.nowUtc();
+    final Task task = createKafkaIndexTask(
+        "id1",
+        DATASOURCE,
+        0,
+        new SeekableStreamStartSequenceNumbers<>("topic", singlePartitionMap(topic, 0, 0L, 1, 0L, 2, 0L), ImmutableSet.of()),
+        new SeekableStreamEndSequenceNumbers<>("topic", singlePartitionMap(topic, 0, 5L, 1, 5L, 2, 5L)),
+        null,
+        null,
+        supervisor.getTuningConfig()
+    );
+
+    EasyMock.expect(taskMaster.getTaskQueue()).andReturn(Optional.of(taskQueue)).anyTimes();
+    EasyMock.expect(taskMaster.getTaskRunner()).andReturn(Optional.of(taskRunner)).anyTimes();
+    EasyMock.expect(taskRunner.getRunningTasks()).andReturn(Collections.emptyList()).anyTimes();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of("id1", task)).anyTimes();
+    EasyMock.expect(taskStorage.getStatus("id1")).andReturn(Optional.of(TaskStatus.running("id1"))).anyTimes();
+    EasyMock.expect(taskStorage.getTask("id1")).andReturn(Optional.of(task)).anyTimes();
+    EasyMock.expect(taskClient.getStatusAsync("id1")).andReturn(Futures.immediateFuture(Status.READING));
+    EasyMock.expect(taskClient.getStartTimeAsync("id1")).andReturn(Futures.immediateFuture(now)).anyTimes();
+    final TreeMap<Integer, Map<KafkaTopicPartition, Long>> checkpoints = new TreeMap<>();
+    checkpoints.put(0, singlePartitionMap(topic, 0, 0L, 1, 0L, 2, 0L));
+    EasyMock.expect(taskClient.getCheckpointsAsync(EasyMock.anyString(), EasyMock.anyBoolean()))
+            .andReturn(Futures.immediateFuture(checkpoints))
+            .anyTimes();
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
+        new KafkaDataSourceMetadata(null)
+    ).anyTimes();
+    taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
+    replayAll();
+
+    supervisor.start();
+    supervisor.runInternal();
+    verifyAll();
+
+    // The supervisor keeps the discovered task's cycle going instead of waiting for the next cycle start.
+    Assertions.assertNotEquals(SupervisorStateManager.BasicState.IDLE, supervisor.getState());
+  }
+
+  @Test
+  public void testScheduledSupervisor_doesNotRereadOffsetsOfTaskDiscoveredAsPublishing() throws Exception
+  {
+    supervisor = getTestableSupervisorWithScheduleConfig(SHORT_SCHEDULE, true);
+    addSomeEvents(10);
+    final Map<KafkaTopicPartition, Long> latestOffsets = getLatestOffsets();
+
+    final Capture<KafkaIndexTask> captured = Capture.newInstance();
+    EasyMock.expect(taskMaster.getTaskQueue()).andReturn(Optional.of(taskQueue)).anyTimes();
+    EasyMock.expect(taskMaster.getTaskRunner()).andReturn(Optional.of(taskRunner)).anyTimes();
+    EasyMock.expect(taskRunner.getRunningTasks()).andReturn(Collections.emptyList()).anyTimes();
+    // The task created in the first run is discovered in the second run, after it has finished reading.
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andAnswer(
+        () -> captured.hasCaptured() ? Map.of(captured.getValue().getId(), captured.getValue()) : Map.of()
+    ).anyTimes();
+    EasyMock.expect(taskStorage.getStatus(EasyMock.anyString())).andAnswer(
+        () -> Optional.of(TaskStatus.running(captured.getValue().getId()))
+    ).anyTimes();
+    EasyMock.expect(taskStorage.getTask(EasyMock.anyString())).andAnswer(
+        () -> Optional.of(captured.getValue())
+    ).anyTimes();
+    EasyMock.expect(taskClient.getStatusAsync(EasyMock.anyString()))
+            .andReturn(Futures.immediateFuture(Status.PUBLISHING))
+            .anyTimes();
+    EasyMock.expect(taskClient.getEndOffsetsAsync(EasyMock.anyString()))
+            .andReturn(Futures.immediateFuture(latestOffsets))
+            .anyTimes();
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
+        new KafkaDataSourceMetadata(null)
+    ).anyTimes();
+    // Exactly one task is added: the second run must not create another task for the same offsets.
+    EasyMock.expect(taskQueue.add(EasyMock.capture(captured))).andReturn(true).once();
+    taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
+    replayAll();
+
+    supervisor.start();
+    waitForNextCycleStart();
+    supervisor.runInternal();
+    supervisor.runInternal();
+    verifyAll();
+
+    Assertions.assertEquals(latestOffsets, captured.getValue().getIOConfig().getEndSequenceNumbers().getPartitionSequenceNumberMap());
+  }
+
+  /**
+   * A schedule whose cycles start every 100 milliseconds, so that a cycle starts once {@link #waitForNextCycleStart()}
+   * returns.
+   */
+  private static final ScheduleConfig SHORT_SCHEDULE = new ScheduleConfig(Period.millis(100), null);
+
+  private static void waitForNextCycleStart() throws InterruptedException
+  {
+    Thread.sleep(SHORT_SCHEDULE.getPeriod().toStandardDuration().getMillis() + 50);
+  }
+
+  /**
+   * Returns a daily schedule whose next cycle starts {@code delay} from now.
+   */
+  private static ScheduleConfig scheduleStartingIn(Period delay)
+  {
+    return new ScheduleConfig(Period.days(1), DateTimes.nowUtc().plus(delay));
+  }
+
+  private Map<KafkaTopicPartition, Long> getLatestOffsets() throws Exception
+  {
+    final Map<TopicPartition, OffsetSpec> request = new HashMap<>();
+    for (int i = 0; i < NUM_PARTITIONS; i++) {
+      request.put(new TopicPartition(topic, i), OffsetSpec.latest());
+    }
+    try (Admin admin = kafkaServer.newAdminClient()) {
+      return admin.listOffsets(request)
+                  .all()
+                  .get()
+                  .entrySet()
+                  .stream()
+                  .collect(Collectors.toMap(
+                      entry -> new KafkaTopicPartition(false, topic, entry.getKey().partition()),
+                      entry -> entry.getValue().offset()
+                  ));
+    }
+  }
+
+  private TestableKafkaSupervisor getTestableSupervisorWithScheduleConfig(
+      ScheduleConfig scheduleConfig,
+      boolean useEarliestOffset
+  )
+  {
+    final Map<String, Object> consumerProperties = KafkaConsumerConfigs.getConsumerProperties();
+    consumerProperties.put("myCustomKey", "myCustomValue");
+    consumerProperties.put("bootstrap.servers", kafkaHost);
+    final KafkaSupervisorIOConfig kafkaSupervisorIOConfig = new KafkaIOConfigBuilder()
+        .withTopic(topic)
+        .withInputFormat(INPUT_FORMAT)
+        .withReplicas(1)
+        .withTaskCount(1)
+        .withTaskDuration(new Period("PT1H"))
+        .withConsumerProperties(consumerProperties)
+        .withStartDelay(new Period("P1D"))
+        .withSupervisorRunPeriod(new Period("PT30S"))
+        .withUseEarliestSequenceNumber(useEarliestOffset)
+        .withCompletionTimeout(new Period("PT30M"))
+        .withScheduleConfig(scheduleConfig)
+        .build();
+
+    final KafkaIndexTaskClientFactory taskClientFactory = new KafkaIndexTaskClientFactory(null, null)
+    {
+      @Override
+      public SeekableStreamIndexTaskClient<KafkaTopicPartition, Long> build(
+          String dataSource,
+          TaskInfoProvider taskInfoProvider,
+          SeekableStreamSupervisorTuningConfig tuningConfig,
+          ScheduledExecutorService connectExec
+      )
+      {
+        return taskClient;
+      }
+    };
+
+    return new TestableKafkaSupervisor(
+        taskStorage,
+        taskMaster,
+        indexerMetadataStorageCoordinator,
+        taskClientFactory,
+        OBJECT_MAPPER,
+        new KafkaSupervisorSpec(
+            null,
+            null,
+            dataSchema,
+            tuningConfigBuilder().build(),
             kafkaSupervisorIOConfig,
             null,
             false,
