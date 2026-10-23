@@ -1166,6 +1166,15 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
   private long lastActiveTimeMillis;
   private final IdleConfig idleConfig;
 
+  // Scheduled ingestion (see ScheduleConfig): the start time of the latest ingestion cycle, and the target offsets of
+  // the cycle in progress, or null between cycles. Target offsets live only in memory; after a restart they are
+  // recovered from the end offsets of the cycle tasks that are still reading.
+  @Nullable
+  private DateTime lastCycleStart;
+  @Nullable
+  private volatile Map<PartitionIdType, SequenceOffsetType> cycleTargetOffsets;
+  private boolean cycleRecoveryAttempted;
+
   public SeekableStreamSupervisor(
       final String supervisorTag,
       final TaskStorage taskStorage,
@@ -1231,6 +1240,11 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
           spec.getSupervisorStateManagerConfig().isIdleConfigEnabled(),
           spec.getSupervisorStateManagerConfig().getInactiveAfterMillis()
       );
+    }
+
+    if (ioConfig.isScheduled()) {
+      // A supervisor that starts between two cycle starts waits for the next one.
+      lastCycleStart = ioConfig.getScheduleConfig().getLatestStartAtOrBefore(DateTimes.nowUtc());
     }
 
     final int workerThreads = calculateWorkerThreads(tuningConfig, ioConfig);
@@ -2110,6 +2124,8 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
 
       checkIfStreamInactiveAndTurnSupervisorIdle();
 
+      updateIngestionCycle();
+
       // If supervisor is already stopping, don't contend for stateChangeLock since the block can be skipped
       if (isStopping()) {
         logDebugReport();
@@ -2122,12 +2138,13 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
         if (isStopping()) {
           // if we're already terminating, don't do anything here, the terminate already handles shutdown
           log.debug("Supervisor[%s] for datasource[%s] is already stopping.", supervisorId, dataSource);
-        } else if (stateManager.isIdle()) {
+        } else if (stateManager.isIdle() && cycleTargetOffsets == null) {
           log.debug("Supervisor[%s] for datasource[%s] is idle.", supervisorId, dataSource);
         } else if (!spec.isSuspended()) {
           log.debug("Supervisor[%s] for datasource[%s] is running.", supervisorId, dataSource);
           stateManager.maybeSetState(SeekableStreamSupervisorStateManager.SeekableStreamState.CREATING_TASKS);
           createNewTasks();
+          maybeEndIngestionCycle();
         } else {
           log.debug("Supervisor[%s] for datasource[%s] is suspended.", supervisorId, dataSource);
           gracefulShutdownInternal();
@@ -2345,6 +2362,34 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
     final SeekableStreamDataSourceMetadata<PartitionIdType, SequenceOffsetType> resetMetadata =
         (SeekableStreamDataSourceMetadata<PartitionIdType, SequenceOffsetType>) dataSourceMetadata;
 
+    writeOffsetsToMetadata(resetMetadata);
+
+    resetMetadata.getSeekableStreamSequenceNumbers()
+                 .getPartitionSequenceNumberMap()
+                 .keySet()
+                 .forEach(partition -> {
+                   final int groupId = getTaskGroupIdForPartition(partition);
+                   killTaskGroupForPartitions(
+                       ImmutableSet.of(partition),
+                       "DataSourceMetadata is updated while reset offsets is called"
+                   );
+                   activelyReadingTaskGroups.remove(groupId);
+                   // killTaskGroupForPartitions() cleans up partitionGroups.
+                   // Add the removed groups back.
+                   partitionGroups.computeIfAbsent(groupId, k -> new HashSet<>());
+                   partitionOffsets.put(partition, getNotSetMarker());
+                 });
+
+  }
+
+  /**
+   * Writes the offsets in {@code resetMetadata} to the metadata store, keeping the stored offsets of any partition
+   * it doesn't mention.
+   */
+  private void writeOffsetsToMetadata(
+      final SeekableStreamDataSourceMetadata<PartitionIdType, SequenceOffsetType> resetMetadata
+  )
+  {
     final boolean metadataUpdateSuccess;
     final DataSourceMetadata metadata = indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(supervisorId);
     if (metadata == null) {
@@ -2372,25 +2417,8 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
     }
 
     if (!metadataUpdateSuccess) {
-      throw new ISE("Unable to reset metadata[%s] for supervisor[%s] for dataSource[%s]", supervisorId, dataSource, dataSourceMetadata);
+      throw new ISE("Unable to reset metadata[%s] for supervisor[%s] for dataSource[%s]", supervisorId, dataSource, resetMetadata);
     }
-
-    resetMetadata.getSeekableStreamSequenceNumbers()
-                 .getPartitionSequenceNumberMap()
-                 .keySet()
-                 .forEach(partition -> {
-                   final int groupId = getTaskGroupIdForPartition(partition);
-                   killTaskGroupForPartitions(
-                       ImmutableSet.of(partition),
-                       "DataSourceMetadata is updated while reset offsets is called"
-                   );
-                   activelyReadingTaskGroups.remove(groupId);
-                   // killTaskGroupForPartitions() cleans up partitionGroups.
-                   // Add the removed groups back.
-                   partitionGroups.computeIfAbsent(groupId, k -> new HashSet<>());
-                   partitionOffsets.put(partition, getNotSetMarker());
-                 });
-
   }
 
   private void killTask(final String id, String reasonFormat, Object... args)
@@ -4416,6 +4444,13 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
           stateManager.recordCompletedTaskState(TaskState.SUCCESS);
           futures.add(stopTasksInGroup(taskGroup, "task[%s] succeeded in the same taskGroup", taskData.status.getId()));
           iTaskGroups.remove();
+          if (ioConfig.isScheduled()) {
+            // The task stopped at its end offsets and committed them, so the next task group starts from the
+            // committed offsets rather than from this group's starting offsets.
+            for (PartitionIdType partitionId : taskGroup.startingSequences.keySet()) {
+              partitionOffsets.put(partitionId, getNotSetMarker());
+            }
+          }
           break;
         }
       }
@@ -4428,7 +4463,7 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
 
   private void checkIfStreamInactiveAndTurnSupervisorIdle()
   {
-    if (!idleConfig.isEnabled() || spec.isSuspended()) {
+    if (!idleConfig.isEnabled() || spec.isSuspended() || ioConfig.isScheduled()) {
       return;
     }
 
@@ -4473,6 +4508,192 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
     }
   }
 
+  /**
+   * Starts an ingestion cycle of a scheduled supervisor when its start time has passed. Between cycles, the supervisor
+   * is {@code IDLE}. At the start of a cycle it records the latest offset of every partition as the cycle's target
+   * offsets; {@link #createNewTasks()} then creates tasks that read up to them, and {@link #maybeEndIngestionCycle()}
+   * ends the cycle once no task is left to read or publish. Start times that pass while a cycle runs collapse into a
+   * single cycle that starts as soon as the running one ends.
+   */
+  private void updateIngestionCycle()
+  {
+    if (!ioConfig.isScheduled() || spec.isSuspended()) {
+      return;
+    }
+
+    if (!cycleRecoveryAttempted) {
+      cycleRecoveryAttempted = true;
+      cycleTargetOffsets = recoverCycleTargetOffsets();
+      if (cycleTargetOffsets != null) {
+        log.info(
+            "Supervisor[%s] is resuming the ingestion cycle of its running tasks with target offsets[%s].",
+            supervisorId,
+            cycleTargetOffsets
+        );
+      }
+    }
+
+    if (cycleTargetOffsets != null) {
+      return;
+    }
+
+    if (!ioConfig.isUseEarliestSequenceNumber()) {
+      commitLatestOffsetsOfUncommittedPartitions();
+    }
+
+    final ScheduleConfig scheduleConfig = ioConfig.getScheduleConfig();
+    final DateTime now = DateTimes.nowUtc();
+    if (scheduleConfig.getNextStartAfter(lastCycleStart).isAfter(now)) {
+      stateManager.maybeSetState(SupervisorStateManager.BasicState.IDLE);
+      return;
+    }
+
+    final Map<PartitionIdType, SequenceOffsetType> targetOffsets = getLatestOffsetsFromStream(getAssignedPartitions());
+    lastCycleStart = scheduleConfig.getLatestStartAtOrBefore(now);
+    cycleTargetOffsets = targetOffsets;
+    log.info(
+        "Supervisor[%s] is starting the ingestion cycle of [%s] with target offsets[%s].",
+        supervisorId,
+        lastCycleStart,
+        targetOffsets
+    );
+    stateManager.maybeSetState(SupervisorStateManager.BasicState.RUNNING);
+  }
+
+  /**
+   * Ends the ingestion cycle in progress if {@link #createNewTasks()} found nothing left to read and no task is still
+   * reading or publishing.
+   */
+  private void maybeEndIngestionCycle()
+  {
+    if (cycleTargetOffsets == null
+        || !activelyReadingTaskGroups.isEmpty()
+        || !pendingCompletionTaskGroups.values().stream().allMatch(List::isEmpty)) {
+      return;
+    }
+    log.info(
+        "Supervisor[%s] finished the ingestion cycle of [%s], next cycle starts at [%s].",
+        supervisorId,
+        lastCycleStart,
+        ioConfig.getScheduleConfig().getNextStartAfter(lastCycleStart)
+    );
+    cycleTargetOffsets = null;
+    stateManager.maybeSetState(SupervisorStateManager.BasicState.IDLE);
+  }
+
+  /**
+   * Returns the end offsets of a task group of the ingestion cycle in progress: the target offset of each partition,
+   * or its starting offset if the partition has no target or has already reached it, so that the task reads nothing
+   * from it.
+   */
+  private ImmutableMap<PartitionIdType, SequenceOffsetType> getCycleEndOffsets(
+      Map<PartitionIdType, SequenceOffsetType> startingOffsets
+  )
+  {
+    final Map<PartitionIdType, SequenceOffsetType> targetOffsets = cycleTargetOffsets;
+    final ImmutableMap.Builder<PartitionIdType, SequenceOffsetType> endOffsets = ImmutableMap.builder();
+    for (Entry<PartitionIdType, SequenceOffsetType> entry : startingOffsets.entrySet()) {
+      final SequenceOffsetType target = targetOffsets == null ? null : targetOffsets.get(entry.getKey());
+      if (target == null || isOffsetAtOrBeyond(entry.getValue(), target)) {
+        endOffsets.put(entry.getKey(), entry.getValue());
+      } else {
+        endOffsets.put(entry.getKey(), target);
+      }
+    }
+    return endOffsets.build();
+  }
+
+  private boolean isPublishingFromSameOffsets(int groupId, TaskGroup taskGroup)
+  {
+    final List<TaskGroup> pendingGroups = pendingCompletionTaskGroups.get(groupId);
+    return pendingGroups != null
+           && pendingGroups.stream().anyMatch(group -> group.startingSequences.equals(taskGroup.startingSequences));
+  }
+
+  /**
+   * Returns the target offsets of the ingestion cycle that the discovered tasks are reading, or null if no task is
+   * reading toward a concrete end offset. Partitions whose tasks have already finished have no target, so whatever
+   * is left of them is read in the next cycle.
+   */
+  @Nullable
+  private Map<PartitionIdType, SequenceOffsetType> recoverCycleTargetOffsets()
+  {
+    final Map<PartitionIdType, SequenceOffsetType> targetOffsets = new HashMap<>();
+    for (TaskGroup taskGroup : activelyReadingTaskGroups.values()) {
+      if (taskGroup.endSequences == null) {
+        continue;
+      }
+      for (Entry<PartitionIdType, SequenceOffsetType> entry : taskGroup.endSequences.entrySet()) {
+        if (!getEndOfPartitionMarker().equals(entry.getValue())) {
+          targetOffsets.put(entry.getKey(), entry.getValue());
+        }
+      }
+    }
+    return targetOffsets.isEmpty() ? null : targetOffsets;
+  }
+
+  /**
+   * Commits the latest offset of every partition that has no committed offset yet, except partitions discovered after
+   * the supervisor started, which are read from the earliest offset. Without it, a partition that starts from the
+   * latest offset would start from the target offset of every cycle and never be read. Only called between cycles,
+   * when no task can commit offsets concurrently.
+   */
+  private void commitLatestOffsetsOfUncommittedPartitions()
+  {
+    if (!activelyReadingTaskGroups.isEmpty()
+        || !pendingCompletionTaskGroups.values().stream().allMatch(List::isEmpty)) {
+      return;
+    }
+    final Map<PartitionIdType, SequenceOffsetType> committedOffsets = getOffsetsFromMetadataStorage();
+    final Set<PartitionIdType> uncommittedPartitions = getAssignedPartitions()
+        .stream()
+        .filter(partition -> !committedOffsets.containsKey(partition)
+                             && !subsequentlyDiscoveredPartitions.contains(partition))
+        .collect(Collectors.toSet());
+    if (uncommittedPartitions.isEmpty()) {
+      return;
+    }
+    final Map<PartitionIdType, SequenceOffsetType> latestOffsets = getLatestOffsetsFromStream(uncommittedPartitions);
+    log.info(
+        "Supervisor[%s] is committing the latest offsets[%s] of partitions without committed offsets, so that the next"
+        + " ingestion cycle reads them from there.",
+        supervisorId,
+        latestOffsets
+    );
+    writeOffsetsToMetadata(createDataSourceMetaDataForReset(ioConfig.getStream(), latestOffsets));
+    for (PartitionIdType partition : latestOffsets.keySet()) {
+      partitionOffsets.put(partition, getNotSetMarker());
+    }
+  }
+
+  private Set<PartitionIdType> getAssignedPartitions()
+  {
+    return partitionGroups.values().stream().flatMap(Set::stream).collect(Collectors.toSet());
+  }
+
+  private Map<PartitionIdType, SequenceOffsetType> getLatestOffsetsFromStream(Set<PartitionIdType> partitions)
+  {
+    final Set<StreamPartition<PartitionIdType>> streamPartitions = partitions
+        .stream()
+        .map(partition -> new StreamPartition<>(ioConfig.getStream(), partition))
+        .collect(Collectors.toSet());
+    final Map<PartitionIdType, SequenceOffsetType> latestOffsets;
+    recordSupplierLock.lock();
+    try {
+      latestOffsets = recordSupplier.getLatestSequenceNumbers(streamPartitions);
+    }
+    finally {
+      recordSupplierLock.unlock();
+    }
+    final Map<PartitionIdType, SequenceOffsetType> result = new HashMap<>();
+    latestOffsets.forEach((partition, offset) -> {
+      if (offset != null) {
+        result.put(partition, offset);
+      }
+    });
+    return result;
+  }
+
   private long computeTotalLag()
   {
     LagStats lagStats = computeLagStats();
@@ -4495,6 +4716,11 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
 
   private void createNewTasks() throws JsonProcessingException
   {
+    if (ioConfig.isScheduled() && cycleTargetOffsets == null) {
+      log.debug("Supervisor[%s] is between ingestion cycles, not creating tasks.", supervisorId);
+      return;
+    }
+
     // update the checkpoints in the taskGroup to latest ones so that new tasks do not read what is already published
     verifyAndMergeCheckpoints(
         activelyReadingTaskGroups.values()
@@ -4592,6 +4818,12 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
         ImmutableMap<PartitionIdType, SequenceOffsetType> endOffsets = null;
         if (ioConfig.isBounded()) {
           endOffsets = ImmutableMap.copyOf(getEndOffsetsForGroup(groupId));
+        } else if (ioConfig.isScheduled()) {
+          endOffsets = getCycleEndOffsets(simpleStartingOffsets);
+          if (endOffsets.equals(simpleStartingOffsets)) {
+            log.debug("TaskGroup[%d] has nothing left to read in this ingestion cycle, skipping creation.", groupId);
+            continue;
+          }
         }
 
         log.info(
@@ -4655,6 +4887,17 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
           log.info(
               "Bounded taskGroup[%d] has reached end offsets, skipping replica top-up",
               groupId
+          );
+          continue;
+        }
+        // A cycle task can reach its end offsets before the supervisor first discovers it, in which case discovery
+        // files it as publishing, under a pending completion group, and this group looks empty. Creating tasks for it
+        // would read the same offsets again.
+        if (ioConfig.isScheduled() && isPublishingFromSameOffsets(groupId, taskGroup)) {
+          log.info(
+              "TaskGroup[%d] is already publishing from offsets[%s], skipping replica top-up",
+              groupId,
+              taskGroup.startingSequences
           );
           continue;
         }

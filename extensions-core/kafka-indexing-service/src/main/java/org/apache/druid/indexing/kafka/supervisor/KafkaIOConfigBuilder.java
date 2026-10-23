@@ -150,7 +150,8 @@ public class KafkaIOConfigBuilder extends SupervisorIOConfigBuilder<KafkaIOConfi
         emitTimeLagMetrics,
         serverPriorityToReplicas,
         boundedStreamConfig,
-        partitionIds
+        partitionIds,
+        scheduleConfig
     );
   }
 }

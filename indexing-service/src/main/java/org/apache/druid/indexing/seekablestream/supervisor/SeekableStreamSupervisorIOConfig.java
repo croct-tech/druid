@@ -20,6 +20,7 @@
 package org.apache.druid.indexing.seekablestream.supervisor;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
@@ -65,6 +66,7 @@ public abstract class SeekableStreamSupervisorIOConfig
   @Nullable private final Integer stopTaskCount;
   @Nullable private final Map<Integer, Integer> serverPriorityToReplicas;
   @Nullable private final BoundedStreamConfig boundedStreamConfig;
+  @Nullable private final ScheduleConfig scheduleConfig;
 
   private final LagAggregator lagAggregator;
   private final boolean autoScalerEnabled;
@@ -88,6 +90,51 @@ public abstract class SeekableStreamSupervisorIOConfig
       @Nullable Integer stopTaskCount,
       @Nullable Map<Integer, Integer> serverPriorityToReplicas,
       @Nullable BoundedStreamConfig boundedStreamConfig
+  )
+  {
+    this(
+        stream,
+        inputFormat,
+        replicas,
+        taskCount,
+        taskDuration,
+        startDelay,
+        period,
+        useEarliestSequenceNumber,
+        completionTimeout,
+        lateMessageRejectionPeriod,
+        earlyMessageRejectionPeriod,
+        autoScalerConfig,
+        lagAggregator,
+        lateMessageRejectionStartDateTime,
+        idleConfig,
+        stopTaskCount,
+        serverPriorityToReplicas,
+        boundedStreamConfig,
+        null
+    );
+  }
+
+  public SeekableStreamSupervisorIOConfig(
+      String stream,
+      @Nullable InputFormat inputFormat,
+      Integer replicas,
+      Integer taskCount,
+      Period taskDuration,
+      Period startDelay,
+      Period period,
+      Boolean useEarliestSequenceNumber,
+      Period completionTimeout,
+      Period lateMessageRejectionPeriod,
+      Period earlyMessageRejectionPeriod,
+      @Nullable AutoScalerConfig autoScalerConfig,
+      LagAggregator lagAggregator,
+      DateTime lateMessageRejectionStartDateTime,
+      @Nullable IdleConfig idleConfig,
+      @Nullable Integer stopTaskCount,
+      @Nullable Map<Integer, Integer> serverPriorityToReplicas,
+      @Nullable BoundedStreamConfig boundedStreamConfig,
+      @Nullable ScheduleConfig scheduleConfig
   )
   {
     this.stream = Preconditions.checkNotNull(stream, "stream cannot be null");
@@ -144,6 +191,10 @@ public abstract class SeekableStreamSupervisorIOConfig
     this.idleConfig = idleConfig;
     this.serverPriorityToReplicas = serverPriorityToReplicas;
     this.boundedStreamConfig = boundedStreamConfig;
+    this.scheduleConfig = scheduleConfig;
+    if (scheduleConfig != null) {
+      validateScheduleConfig();
+    }
 
     if (this.serverPriorityToReplicas != null) {
       int serverPriorityReplicas = 0;
@@ -172,6 +223,30 @@ public abstract class SeekableStreamSupervisorIOConfig
       this.replicas = serverPriorityReplicas;
     } else {
       this.replicas = replicas != null ? replicas : 1;
+    }
+  }
+
+  /**
+   * Rejects the settings that contradict scheduled ingestion. Bounded and idle ingestion decide on their own when to
+   * read, the autoscaler would scale up on the backlog at the start of every cycle, and the late message rejection
+   * period, measured from task creation, would drop most of a cycle's backlog.
+   */
+  private void validateScheduleConfig()
+  {
+    if (boundedStreamConfig != null) {
+      throw InvalidInput.exception("'scheduleConfig' cannot be combined with 'boundedStreamConfig'");
+    }
+    if (idleConfig != null && idleConfig.isEnabled()) {
+      throw InvalidInput.exception("'scheduleConfig' cannot be combined with an enabled 'idleConfig'");
+    }
+    if (autoScalerEnabled) {
+      throw InvalidInput.exception("'scheduleConfig' cannot be combined with an enabled 'autoScalerConfig'");
+    }
+    if (lateMessageRejectionPeriod.isPresent()) {
+      throw InvalidInput.exception(
+          "'scheduleConfig' cannot be combined with 'lateMessageRejectionPeriod'."
+          + " Use 'lateMessageRejectionStartDateTime' instead."
+      );
     }
   }
 
@@ -318,6 +393,19 @@ public abstract class SeekableStreamSupervisorIOConfig
     return boundedStreamConfig != null;
   }
 
+  @Nullable
+  @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  public ScheduleConfig getScheduleConfig()
+  {
+    return scheduleConfig;
+  }
+
+  public boolean isScheduled()
+  {
+    return scheduleConfig != null;
+  }
+
   @Override
   public boolean equals(Object o)
   {
@@ -346,6 +434,7 @@ public abstract class SeekableStreamSupervisorIOConfig
            && Objects.equals(stopTaskCount, that.stopTaskCount)
            && Objects.equals(serverPriorityToReplicas, that.serverPriorityToReplicas)
            && Objects.equals(boundedStreamConfig, that.boundedStreamConfig)
+           && Objects.equals(scheduleConfig, that.scheduleConfig)
            && Objects.equals(lagAggregator, that.lagAggregator);
   }
 
@@ -370,6 +459,7 @@ public abstract class SeekableStreamSupervisorIOConfig
         stopTaskCount,
         serverPriorityToReplicas,
         boundedStreamConfig,
+        scheduleConfig,
         lagAggregator
     );
   }

@@ -433,7 +433,7 @@ The following table lists `detailedState` values and their corresponding `state`
 |`DISCOVERING_INITIAL_TASKS` (first iteration only)|`RUNNING`|The supervisor is discovering already-running tasks.|
 |`CREATING_TASKS` (first iteration only)|`RUNNING`|The supervisor is creating tasks and discovering state.|
 |`RUNNING`|`RUNNING`|The supervisor has started tasks and is waiting for `taskDuration` to elapse.|
-|`IDLE`|`IDLE`|The supervisor is not creating tasks since the input stream has not received any new data and all the existing data is read.|
+|`IDLE`|`IDLE`|The supervisor is not creating tasks since the input stream has not received any new data and all the existing data is read, or since the supervisor is waiting for its next [scheduled ingestion](kafka-ingestion.md#scheduled-ingestion) cycle.|
 |`SUSPENDED`|`SUSPENDED`|The supervisor is suspended.|
 |`STOPPING`|`STOPPING`|The supervisor is stopping.|
 

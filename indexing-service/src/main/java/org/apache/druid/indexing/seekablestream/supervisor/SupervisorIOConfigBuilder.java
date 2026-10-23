@@ -58,6 +58,7 @@ public abstract class SupervisorIOConfigBuilder<
   protected Integer stopTaskCount;
   protected Map<Integer, Integer> serverPriorityToReplicas;
   protected BoundedStreamConfig boundedStreamConfig;
+  protected ScheduleConfig scheduleConfig;
 
   public Self withStream(String stream)
   {
@@ -173,6 +174,12 @@ public abstract class SupervisorIOConfigBuilder<
     return self();
   }
 
+  public Self withScheduleConfig(ScheduleConfig scheduleConfig)
+  {
+    this.scheduleConfig = scheduleConfig;
+    return self();
+  }
+
   /**
    * Populates this builder's base-class fields from an existing config. Stores the constructor's
    * input types ({@link Period} rather than the normalized {@link Duration}) so {@link #build()}
@@ -200,6 +207,7 @@ public abstract class SupervisorIOConfigBuilder<
     this.stopTaskCount = io.getStopTaskCount();
     this.serverPriorityToReplicas = io.getServerPriorityToReplicas();
     this.boundedStreamConfig = io.getBoundedStreamConfig();
+    this.scheduleConfig = io.getScheduleConfig();
     return self();
   }
 
@@ -245,7 +253,8 @@ public abstract class SupervisorIOConfigBuilder<
           idleConfig,
           stopTaskCount,
           serverPriorityToReplicas,
-          boundedStreamConfig
+          boundedStreamConfig,
+          scheduleConfig
       )
       {
         @Override
