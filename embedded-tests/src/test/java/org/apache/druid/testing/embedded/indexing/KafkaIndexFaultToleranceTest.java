@@ -22,6 +22,7 @@ package org.apache.druid.testing.embedded.indexing;
 import org.apache.druid.indexing.kafka.simulate.KafkaResource;
 import org.apache.druid.indexing.overlord.supervisor.SupervisorSpec;
 import org.apache.druid.testing.embedded.StreamIngestResource;
+import org.joda.time.Period;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -39,7 +40,10 @@ public class KafkaIndexFaultToleranceTest extends StreamIndexFaultToleranceTest
   @Override
   protected SupervisorSpec createSupervisorSpec(String dataSource, String topic)
   {
-    return createKafkaSupervisor(kafkaResource).withId("supe_" + dataSource).build(dataSource, topic);
+    return createKafkaSupervisor(kafkaResource)
+        .withIoConfig(ioConfig -> ioConfig.withCompletionTimeout(Period.seconds(60)))
+        .withId("supe_" + dataSource)
+        .build(dataSource, topic);
   }
 
   @Test
