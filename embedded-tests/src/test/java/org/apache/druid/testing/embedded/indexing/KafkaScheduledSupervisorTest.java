@@ -133,8 +133,8 @@ public class KafkaScheduledSupervisorTest extends StreamIndexTestBase
     final String topic = IdUtils.getRandomId();
     kafkaServer.createTopicWithPartitions(topic, 2);
 
-    final int firstBatch = publish1kRecords(topic, false);
-    // Without runs at cycle starts, no cycle would start before the supervisor's next periodic run, an hour later.
+    // The first cycle reads the empty topic and ends in the supervisor's first run. Without runs at cycle starts, no
+    // other cycle would start before the supervisor's next periodic run, an hour later.
     final KafkaSupervisorSpec supervisor = createKafkaSupervisor(kafkaServer)
         .withIoConfig(io -> io
             .withTaskDuration(TASK_DURATION)
@@ -143,10 +143,16 @@ public class KafkaScheduledSupervisorTest extends StreamIndexTestBase
         )
         .build(dataSource, topic);
     cluster.callApi().postSupervisor(supervisor);
-    waitUntilPublishedRecordsAreIngested(firstBatch, CYCLE_INGESTION_TIMEOUT_MILLIS);
+    waitForNextIdleState(supervisor.getId());
 
-    final int secondBatch = publish1kRecords(topic, false);
-    waitUntilPublishedRecordsAreIngested(firstBatch + secondBatch, CYCLE_INGESTION_TIMEOUT_MILLIS);
+    publish1kRecords(topic, false);
+    // A cycle that starts while the records are being published reads only some of them, and the supervisor may not
+    // notice that cycle end before its next periodic run. Waiting for some records keeps the test independent of that.
+    indexer.latchableEmitter().waitForEventAggregate(
+        event -> event.hasMetricName("ingest/rows/published").hasDimension(DruidMetrics.DATASOURCE, dataSource),
+        agg -> agg.hasSumAtLeast(1),
+        CYCLE_INGESTION_TIMEOUT_MILLIS
+    );
   }
 
   private KafkaSupervisorSpec createScheduledKafkaSupervisor(String topic, boolean useEarliestOffset)
