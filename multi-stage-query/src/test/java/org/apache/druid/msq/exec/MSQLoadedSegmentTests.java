@@ -20,7 +20,6 @@
 package org.apache.druid.msq.exec;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.Futures;
 import org.apache.druid.client.ImmutableSegmentLoadInfo;
@@ -36,12 +35,13 @@ import org.apache.druid.msq.indexing.LegacyMSQSpec;
 import org.apache.druid.msq.indexing.MSQTuningConfig;
 import org.apache.druid.msq.indexing.destination.TaskReportMSQDestination;
 import org.apache.druid.msq.test.MSQTestBase;
-import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.query.DefaultGenericQueryMetricsFactory;
 import org.apache.druid.query.OrderBy;
+import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryPlus;
 import org.apache.druid.query.QueryRunner;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
+import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
 import org.apache.druid.query.groupby.GroupByQuery;
@@ -59,6 +59,7 @@ import org.apache.druid.sql.calcite.planner.ColumnMapping;
 import org.apache.druid.sql.calcite.planner.ColumnMappings;
 import org.apache.druid.sql.calcite.util.CalciteTests;
 import org.apache.druid.timeline.DataSegment;
+import org.apache.druid.timeline.SegmentId;
 import org.apache.druid.timeline.partition.LinearShardSpec;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -77,15 +78,12 @@ import static org.mockito.Mockito.doThrow;
 public class MSQLoadedSegmentTests extends MSQTestBase
 {
   public static final Map<String, Object> REALTIME_QUERY_CTX =
-      ImmutableMap.<String, Object>builder()
+      QueryContext.builder()
                   .putAll(DEFAULT_MSQ_CONTEXT)
-                  .put(MultiStageQueryContext.CTX_INCLUDE_SEGMENT_SOURCE, SegmentSource.REALTIME.name())
-                  .build();
+                  .put(QueryContextParameters.INCLUDE_SEGMENT_SOURCE, SegmentSource.REALTIME.name())
+                  .toMap();
   public static final DataSegment LOADED_SEGMENT_1 =
-      DataSegment.builder()
-                 .dataSource(CalciteTests.DATASOURCE1)
-                 .interval(Intervals.of("2003-01-01T00:00:00.000Z/2004-01-01T00:00:00.000Z"))
-                 .version("1")
+      DataSegment.builder(SegmentId.of(CalciteTests.DATASOURCE1, Intervals.of("2003-01-01T00:00:00.000Z/2004-01-01T00:00:00.000Z"), "1", 0))
                  .shardSpec(new LinearShardSpec(0))
                  .size(0)
                  .build();
