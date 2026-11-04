@@ -21,8 +21,9 @@ default set is the one our cluster runs: `druid-basic-security`, `postgresql-met
 `druid-kubernetes-overlord-extensions` and `prometheus-emitter`. All compiled-in extension modules are always
 active, found through the class path like Druid's embedded tests do, and the image keeps an empty `extensions/<name>`
 directory for each so that `druid.extensions.loadList` keeps validating. Reachability metadata comes from four
-sources: the build scans every jar and registers all Druid classes, all service providers and the libraries known to
-load classes by name (`NativeImageBuildTool`), it runs a small cluster on a JVM with the GraalVM tracing agent and
+sources: the build scans every jar and registers all Druid classes (with their array types, which Jackson instantiates
+while resolving the generic members of the lists and maps holding them), all service providers and the libraries known
+to load classes by name (`NativeImageBuildTool`), it runs a small cluster on a JVM with the GraalVM tracing agent and
 records what the services, peons, queries, lookups, supervisors and APIs touch (`trace.sh`), a short hand-written
 list covers JDK classes Jackson instantiates, and the metadata GraalVM publishes for JNA
 (`distribution/docker/native/config/jna`, from the `oracle/graalvm-reachability-metadata` repository) covers the JNI
