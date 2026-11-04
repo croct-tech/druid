@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         jdk: [ "25" ]
-        pattern: [ "C*", "S*", "K*,U*,Z*,Y*,X*", "N*,Q*", "I*,L*,J*", "M*,A*,V*,W*", "E*,G*,F*", "R*,B*,P*", "H*,D*,T*,O*" ]
+        pattern: ['A*', 'B*', 'C*', 'D*', 'E*', 'F*', 'G*', 'H*', 'I*', 'J*', 'K*', 'L*', 'M*', 'N*', 'O*', 'P*', 'Q*', 'R*', 'S*', 'T*', 'U*', 'V*', 'W*', 'X*', 'Y*', 'Z*']
     uses: ./.github/workflows/worker.yml
     with:
       script: .github/scripts/run_unit-tests -Dtest=!QTest,'${{ matrix.pattern }}' -Dmaven.test.failure.ignore=true
@@ -49,14 +49,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "QTest 0/4"
-            args: "-Dtest=QTest -Dquidem.split=0/4"
-          - name: "QTest 1/4"
-            args: "-Dtest=QTest -Dquidem.split=1/4"
-          - name: "QTest 2/4"
-            args: "-Dtest=QTest -Dquidem.split=2/4"
-          - name: "QTest 3/4"
-            args: "-Dtest=QTest -Dquidem.split=3/4"
+          - name: "QTest 0/8"
+            args: "-Dtest=QTest -Dquidem.split=0/8"
+          - name: "QTest 1/8"
+            args: "-Dtest=QTest -Dquidem.split=1/8"
+          - name: "QTest 2/8"
+            args: "-Dtest=QTest -Dquidem.split=2/8"
+          - name: "QTest 3/8"
+            args: "-Dtest=QTest -Dquidem.split=3/8"
+          - name: "QTest 4/8"
+            args: "-Dtest=QTest -Dquidem.split=4/8"           
+          - name: "QTest 5/8"
+            args: "-Dtest=QTest -Dquidem.split=5/8"
+          - name: "QTest 6/8"
+            args: "-Dtest=QTest -Dquidem.split=6/8"
+          - name: "QTest 7/8"
+            args: "-Dtest=QTest -Dquidem.split=7/8"
     uses: ./.github/workflows/worker.yml
     with:
       script: .github/scripts/run_unit-tests ${{ matrix.args }} -Dmaven.test.failure.ignore=true
