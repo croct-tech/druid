@@ -37,20 +37,27 @@ once without creating tasks.
 - **The schedule is aligned to the clock, not to the previous cycle.** Start times depend only on `period` and
   `origin`, so they need no stored state and survive Overlord restarts and leader changes. `origin` defaults to the
   epoch; giving supervisors different origins staggers them so they don't all launch tasks at the same moment.
-  `period` must be a fixed length (no months or years).
+  `period` must be a fixed length (no months or years). The supervisor schedules a run at each start time instead of
+  waiting for its next periodic run, which can be up to `ioConfig.period` later.
 - **Overruns collapse.** If a cycle is still running when its next start time passes, no second cycle starts in
   parallel. When it ends, one new cycle starts immediately, however many start times it missed.
-- **Restarts.** Target offsets live only in memory. After an Overlord restart the supervisor recovers them from the
-  end offsets of the cycle tasks it discovers and finishes the cycle. If no cycle tasks are running, it waits for the
-  next start time, and anything left over from an interrupted cycle is read then. Submitting a new spec restarts the
-  supervisor the same way.
+- **Restarts.** Target offsets live only in memory. After an Overlord restart or leader change the supervisor
+  recovers them from the end offsets of the cycle tasks it discovers and finishes the cycle. If no cycle tasks are
+  running, it looks in the metadata store for a task of its own created since the latest start time. If there is
+  none, that cycle never started, for instance because the leader changed between the start time and the run that
+  would have started it, and the supervisor starts it right away instead of losing a whole `period`. Otherwise it
+  waits for the next start time, and anything left over from an interrupted cycle is read then. Submitting a new spec
+  restarts the supervisor the same way, so a new supervisor runs its first cycle as soon as it starts. The task table
+  is state that already survives leader changes, so the schedule still needs no stored state of its own. The cost is
+  an extra cycle when a restart follows a cycle that had nothing to read, since that cycle created no tasks.
 - **Partitions without committed offsets are pinned.** With `useEarliestOffset: false`, a partition with no committed
   offset starts at the stream's latest offset, which at the start of a cycle is also its target, so it would never be
   read. Between cycles, the supervisor therefore commits the latest offset of every such partition, the way the reset
   offsets API does, and the next cycle reads from there. Partitions discovered later are read from the earliest
   offset, as in continuous ingestion, and are not pinned.
-- **Suspension wins.** A suspended scheduled supervisor behaves like any suspended supervisor. When resumed, it waits
-  for the next start time.
+- **Suspension wins.** A suspended scheduled supervisor behaves like any suspended supervisor. When resumed, it
+  starts like a restarted supervisor: it runs the latest cycle if no task of its own was created since that cycle's
+  start time, and otherwise waits for the next start time.
 
 The supervisor rejects `scheduleConfig` together with `boundedStreamConfig`, an enabled `idleConfig`, an enabled
 `autoScalerConfig`, or `lateMessageRejectionPeriod`. Bounded and idle ingestion contradict it. The autoscaler would see

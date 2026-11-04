@@ -127,6 +127,28 @@ public class KafkaScheduledSupervisorTest extends StreamIndexTestBase
     verifyRowCount(recordsAfterStart);
   }
 
+  @Test
+  public void test_scheduledSupervisor_startsCyclesOnTimeWhenItsRunPeriodIsLonger()
+  {
+    final String topic = IdUtils.getRandomId();
+    kafkaServer.createTopicWithPartitions(topic, 2);
+
+    final int firstBatch = publish1kRecords(topic, false);
+    // Without runs at cycle starts, no cycle would start before the supervisor's next periodic run, an hour later.
+    final KafkaSupervisorSpec supervisor = createKafkaSupervisor(kafkaServer)
+        .withIoConfig(io -> io
+            .withTaskDuration(TASK_DURATION)
+            .withSupervisorRunPeriod(Period.hours(1))
+            .withScheduleConfig(new ScheduleConfig(CYCLE_PERIOD, null))
+        )
+        .build(dataSource, topic);
+    cluster.callApi().postSupervisor(supervisor);
+    waitUntilPublishedRecordsAreIngested(firstBatch, CYCLE_INGESTION_TIMEOUT_MILLIS);
+
+    final int secondBatch = publish1kRecords(topic, false);
+    waitUntilPublishedRecordsAreIngested(firstBatch + secondBatch, CYCLE_INGESTION_TIMEOUT_MILLIS);
+  }
+
   private KafkaSupervisorSpec createScheduledKafkaSupervisor(String topic, boolean useEarliestOffset)
   {
     return createKafkaSupervisor(kafkaServer)
