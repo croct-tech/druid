@@ -77,6 +77,7 @@ import java.util.stream.Stream;
  *     --reflect-jar prefixes. Classes in a --reflect-package-constructors package only get their constructors:
  *     enough for libraries that instantiate classes by name. In every other class, members that Guice reaches
  *     reflectively are registered: constructors, methods and fields annotated with Inject, and Provides methods.
+ *     Every class registered in full also gets its array type, which Jackson instantiates while resolving generics.
  *     Methods and fields are registered only where they can be
  *     reached reflectively: methods on classes that carry any annotation (Jackson, Guice, JAX-RS, lifecycle and
  *     validation annotations all mean members are called reflectively; service providers always get their methods),
@@ -694,6 +695,9 @@ public final class NativeImageBuildTool
             + (fieldClasses.contains(clazz) ? ",\"allDeclaredFields\":true" : "")
             + "}"
         );
+        // Jackson instantiates an empty array of a type when it resolves E[] members of a generic container holding
+        // it, such as the constructor of the list List.copyOf returns, and the image fails on array types it lacks.
+        writer.print(",\n  {\"name\":\"" + clazz + "[]\"}");
         first = false;
       }
       for (String clazz : constructorClasses) {

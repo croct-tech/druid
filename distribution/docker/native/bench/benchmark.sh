@@ -354,7 +354,7 @@ check_router() {
   report "| \`$1\` | $status |"
   [ "$status" = 200 ] || fail "router request $1 returned HTTP $status"
 }
-for path in /status/health /unified-console.html /console-config.js /druid/router/v1/brokers /proxy/coordinator/druid/coordinator/v1/datasources /proxy/overlord/druid/indexer/v1/completeTasks; do
+for path in /status/health /unified-console.html /console-config.js /druid/router/v1/brokers /proxy/coordinator/druid/coordinator/v1/datasources /proxy/coordinator/druid/coordinator/v1/config/cloneStatus /proxy/overlord/druid/indexer/v1/completeTasks; do
   check_router "$path"
 done
 asset="$(curl -s "$ROUTER/unified-console.html" | grep -o 'public/web-console-[^"]*\.js' | head -1)"
