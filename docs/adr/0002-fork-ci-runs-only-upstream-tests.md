@@ -15,4 +15,5 @@ We kept the scripts and configs that only the deleted workflows used (most of `.
 
 - Upstream edits its workflows often (action bumps touch every file), so upstream syncs hit modify/delete conflicts on the deleted workflows. Resolve them by keeping the file deleted.
 - A workflow that upstream adds arrives without a conflict. Delete it in the sync merge unless the test pipeline calls it.
+- Upstream moved the `static-checks-maven`, `strict-compilation` and `openrewrite` jobs into `ci.yml` (apache/druid#20734). Keep them out of the fork's `ci.yml`, like any other static check upstream adds there.
 - On a conflict in the `on:` block of `unit-and-integration-tests-unified.yml`, keep the fork's triggers. Take upstream's changes to the rest of the file, such as new jobs.

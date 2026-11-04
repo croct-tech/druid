@@ -96,7 +96,7 @@ public final class NativeImageBuildTool
    */
   private static final Pattern GRAALVM_JAR = Pattern.compile(
       "^(polyglot|truffle-api|truffle-compiler|truffle-runtime|js-language|js-scriptengine|nativeimage|collections"
-      + "|word|jniutils|icu4j|regex|xz)-\\d+\\.\\d+\\.\\d+(\\.\\d+)?\\.jar$"
+      + "|word|jniutils|icu4j|regex|xz)-\\d+\\.\\d+\\.\\d+(\\.\\d+)*\\.jar$"
   );
 
   /**

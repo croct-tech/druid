@@ -118,7 +118,7 @@ jobs:
       - name: Use the Maven Central mirror
         run: |
           echo "MVNW_REPOURL=https://maven-central.storage-download.googleapis.com/maven2" >> "$GITHUB_ENV"
-          echo "--settings=.github/maven-settings.xml" > .mvn/maven.config
+          echo "--settings=.github/maven-settings.xml" >> .mvn/maven.config
 
       - name: Build the Druid distribution
         env:

@@ -68,6 +68,7 @@ import org.apache.druid.query.aggregation.SimpleLongAggregatorFactory;
 import org.apache.druid.query.context.QueryContextParameters;
 import org.apache.druid.query.dimension.DimensionSpec;
 import org.apache.druid.query.filter.DimFilter;
+import org.apache.druid.query.filter.DimFilters;
 import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.groupby.having.DimFilterHavingSpec;
 import org.apache.druid.query.groupby.orderby.DefaultLimitSpec;
@@ -100,6 +101,8 @@ import org.apache.druid.sql.calcite.aggregation.DimensionExpression;
 import org.apache.druid.sql.calcite.expression.DruidExpression;
 import org.apache.druid.sql.calcite.expression.Expressions;
 import org.apache.druid.sql.calcite.filtration.Filtration;
+import org.apache.druid.sql.calcite.filtration.RangeRefKey;
+import org.apache.druid.sql.calcite.filtration.Ranges;
 import org.apache.druid.sql.calcite.planner.Calcites;
 import org.apache.druid.sql.calcite.planner.OffsetLimit;
 import org.apache.druid.sql.calcite.planner.PlannerContext;
@@ -887,6 +890,33 @@ public class DruidQuery
   }
 
   /**
+   * Returns the filter ANDed with a filter on {@code __time} matching the time condition, if the datasource is
+   * table-based.
+   */
+  @Nullable
+  @VisibleForTesting
+  static DimFilter withTimeCondition(
+      final DataSource dataSource,
+      @Nullable final DimFilter filter,
+      @Nullable final List<Interval> timeCondition
+  )
+  {
+    if (timeCondition == null || !canUseIntervalFiltering(dataSource)) {
+      return filter;
+    }
+
+    final RangeRefKey timeKey = new RangeRefKey(ColumnHolder.TIME_COLUMN_NAME, ColumnType.LONG);
+    final List<DimFilter> timeFilters = new ArrayList<>();
+    for (final Interval interval : timeCondition) {
+      timeFilters.add(Ranges.interval(timeKey, interval));
+    }
+    return DimFilters.conjunction(
+        filter,
+        timeFilters.size() == 1 ? timeFilters.getFirst() : DimFilters.or(timeFilters)
+    );
+  }
+
+  /**
    * Whether the given datasource can make use of "intervals" based filtering. The is true for anything based on
    * regular tables ({@link TableDataSource}).
    */
@@ -1077,7 +1107,7 @@ public class DruidQuery
       }
       final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
           dataSource,
-          filter,
+          withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
           virtualColumnRegistry,
           plannerContext.getJoinableFactoryWrapper()
       );
@@ -1092,9 +1122,9 @@ public class DruidQuery
       String bound = minTime ? TimeBoundaryQuery.MIN_TIME : TimeBoundaryQuery.MAX_TIME;
       Map<String, Object> context = new HashMap<>(plannerContext.queryContextMap());
       if (minTime) {
-        context.put(TimeBoundaryQuery.MIN_TIME_ARRAY_OUTPUT_NAME, aggregatorFactory.getName());
+        QueryContextParameters.MIN_TIME_ARRAY_OUTPUT_NAME.set(context, aggregatorFactory.getName());
       } else {
-        context.put(TimeBoundaryQuery.MAX_TIME_ARRAY_OUTPUT_NAME, aggregatorFactory.getName());
+        QueryContextParameters.MAX_TIME_ARRAY_OUTPUT_NAME.set(context, aggregatorFactory.getName());
       }
       return new TimeBoundaryQuery(
           newDataSource,
@@ -1151,8 +1181,8 @@ public class DruidQuery
         return null;
       }
 
-      theContext.put(
-          TimeseriesQuery.CTX_TIMESTAMP_RESULT_FIELD,
+      QueryContextParameters.TIMESTAMP_RESULT_FIELD.set(
+          theContext,
           Iterables.getOnlyElement(grouping.getDimensions()).toDimensionSpec().getOutputName()
       );
       if (sorting != null) {
@@ -1201,7 +1231,7 @@ public class DruidQuery
     final VirtualColumns virtualColumns = computeVirtualColumns(false);
     final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
         dataSource,
-        filter,
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
         virtualColumnRegistry,
         plannerContext.getJoinableFactoryWrapper()
     );
@@ -1307,7 +1337,7 @@ public class DruidQuery
     final VirtualColumns virtualColumns = computeVirtualColumns(true);
     final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
         dataSource,
-        filter,
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
         virtualColumnRegistry,
         plannerContext.getJoinableFactoryWrapper()
     );
@@ -1354,7 +1384,7 @@ public class DruidQuery
     final VirtualColumns virtualColumns = computeVirtualColumns(true);
     final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
         dataSource,
-        filter,
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
         virtualColumnRegistry,
         plannerContext.getJoinableFactoryWrapper()
     );
@@ -1440,12 +1470,15 @@ public class DruidQuery
         int timestampDimensionIndexInDimensions = grouping.getDimensions().indexOf(dimensionExpression);
 
         // these settings will only affect the most inner query sent to the down streaming compute nodes
-        theContext.put(GroupByQuery.CTX_TIMESTAMP_RESULT_FIELD, dimensionExpression.getOutputName());
-        theContext.put(GroupByQuery.CTX_TIMESTAMP_RESULT_FIELD_INDEX, timestampDimensionIndexInDimensions);
+        QueryContextParameters.TIMESTAMP_RESULT_FIELD.set(theContext, dimensionExpression.getOutputName());
+        QueryContextParameters.TIMESTAMP_RESULT_FIELD_IN_ORIGINAL_DIMENSIONS.set(
+            theContext,
+            timestampDimensionIndexInDimensions
+        );
 
         try {
-          theContext.put(
-              GroupByQuery.CTX_TIMESTAMP_RESULT_FIELD_GRANULARITY,
+          QueryContextParameters.TIMESTAMP_RESULT_FIELD_GRANULARITY.set(
+              theContext,
               plannerContext.getJsonMapper().writeValueAsString(queryGranularity)
           );
         }
@@ -1457,7 +1490,7 @@ public class DruidQuery
 
     if (grouping.getDimensions().isEmpty() && grouping.hasGroupingDimensionsDropped()) {
       // GROUP BY ().
-      theContext.put(GroupByQuery.CTX_HAS_DROPPED_DIMENSIONS, grouping.hasGroupingDimensionsDropped());
+      QueryContextParameters.HAS_DROPPED_DIMENSIONS.set(theContext, grouping.hasGroupingDimensionsDropped());
     }
 
     if (theContext.isEmpty()) {
@@ -1511,12 +1544,20 @@ public class DruidQuery
     // This would cause MSQ queries to plan as
     // Window over an inner scan and avoid
     // leaf operators
-    boolean pushLeafOperator = plannerContext.queryContext()
-                                             .getBoolean(PlannerContext.CTX_ENABLE_RAC_TRANSFER_OVER_WIRE, false)
-                               && !plannerContext.featureAvailable(EngineFeature.WINDOW_LEAF_OPERATOR);
-    return new WindowOperatorQuery(
+    boolean pushLeafOperator =
+        plannerContext.queryContext().getOrDefault(QueryContextParameters.ENABLE_RAC_OVER_WIRE)
+        && !plannerContext.featureAvailable(EngineFeature.WINDOW_LEAF_OPERATOR);
+
+    final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
         dataSource,
-        new LegacySegmentSpec(Intervals.ETERNITY),
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
+        virtualColumnRegistry,
+        plannerContext.getJoinableFactoryWrapper()
+    );
+
+    return new WindowOperatorQuery(
+        dataSourceFiltrationPair.lhs,
+        new LegacySegmentSpec(dataSourceFiltrationPair.rhs.getIntervals()),
         plannerContext.queryContextMap(),
         windowing.getSignature(),
         operators,
@@ -1580,7 +1621,7 @@ public class DruidQuery
 
     return new WindowOperatorQuery(
         newDataSource,
-        new LegacySegmentSpec(Intervals.ETERNITY),
+        new LegacySegmentSpec(scan.getIntervals()),
         plannerContext.queryContextMap(),
         signature,
         operators,
@@ -1633,7 +1674,7 @@ public class DruidQuery
     final VirtualColumns virtualColumns = computeVirtualColumns(true);
     final Pair<DataSource, Filtration> dataSourceFiltrationPair = getFiltration(
         dataSource,
-        filter,
+        withTimeCondition(dataSource, filter, plannerContext.getTimeCondition()),
         virtualColumnRegistry,
         plannerContext.getJoinableFactoryWrapper()
     );

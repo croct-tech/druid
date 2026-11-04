@@ -18,6 +18,8 @@
   ~ under the License.
   -->
 <suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+  <!-- Temporary suppressions (waiting on an upgrade, an upstream release or an advisory) set until="YYYY-MM-DDZ"
+       so they lapse and get re-assessed. -->
   <!-- False positives -->
 
   <suppress>
@@ -135,7 +137,7 @@
     <cve>CVE-2023-33546</cve>
   </suppress>
 
-  <suppress>
+  <suppress until="2027-01-31Z">
     <!-- from extensions using hadoop-client-runtime, these dependencies are shaded in the jar -->
     <notes><![CDATA[
      file name: hadoop-client-runtime-3.3.6.jar
@@ -163,7 +165,7 @@
     <cve>CVE-2025-5115</cve> <!-- netty issue in shaded hadoop -->
   </suppress>
 
-  <suppress>
+  <suppress until="2027-04-30Z">
     <!-- from extensions using hadoop-client-runtime 3.5.0, these dependencies are shaded in the jar -->
     <notes><![CDATA[
      file name: hadoop-client-runtime-3.5.0.jar
@@ -430,7 +432,7 @@
      <vulnerabilityName>1084765</vulnerabilityName>
    </suppress>
 
-  <suppress>
+  <suppress until="2027-01-31Z">
     <!-- from extensions using hadoop-client-runtime, these dependencies are shaded in the jar -->
     <notes><![CDATA[
      file name: hadoop-client-runtime-3.3.6.jar
@@ -820,18 +822,21 @@
          polymorphic typing is enabled with generic type parameters or array subtypes.
          CVE-2026-83557: DefaultBaseTypeLimitingValidator omits java.lang.Comparable from unsafe
          base types, enabling arbitrary class instantiation via polymorphic deserialization.
+         CVE-2026-91776: unbounded type-id cache growth with @JsonTypeInfo(use = NAME, defaultImpl = ...).
+         CVE-2026-91777: quadratic forward-reference resolution with @JsonIdentityInfo.
+         Neither Hadoop's client classes nor Parquet's classes reference these annotations.
          These CVEs affect jackson-databind shaded inside hadoop/parquet jars,
-         not Druid's own jackson-databind (2.22.x).
-         CVE-2026-68497: Not yet published in NVD, suppressed as appearing only inside shaded jars -->
+         not Druid's own jackson-databind (2.22.x). -->
     <notes><![CDATA[
       file name: hadoop-client-runtime-3.5.0.jar (shaded jackson-databind 2.18.6)
-                 parquet-jackson-1.18.0.jar (shaded jackson-databind 2.22.1)
+                 parquet-jackson-1.18.1.jar (shaded jackson-databind 2.22.2)
     ]]></notes>
     <filePath regex="true">.*/(hadoop-client-runtime|parquet-jackson)-[0-9][^/]*\.jar/META-INF/maven/com\.fasterxml\.jackson\.core/jackson-databind/pom\.xml$</filePath>
     <cve>CVE-2026-54512</cve>
     <cve>CVE-2026-54513</cve>
-    <cve>CVE-2026-68497</cve>
     <cve>CVE-2026-83557</cve>
+    <cve>CVE-2026-91776</cve>
+    <cve>CVE-2026-91777</cve>
   </suppress>
 
   <suppress>
@@ -848,10 +853,57 @@
     <cve>CVE-2026-89425</cve>
   </suppress>
 
+  <suppress until="2027-04-30Z">
+    <notes><![CDATA[
+      file name: hadoop-client-runtime-3.5.0.jar (shaded jackson-core 2.18.6)
+    ]]></notes>
+    <filePath regex="true">.*/(hadoop-client-runtime)-[0-9][^/]*\.jar/META-INF/maven/com\.fasterxml\.jackson\.core/jackson-core/pom\.xml$</filePath>
+    <cve>CVE-2026-68494</cve> <!-- DoS in the async JSON parser of jackson-core 2.18.6 shaded in hadoop-client-runtime 3.5.0. Druid and Hadoop do not use the async parser. Remove when Hadoop uses jackson-core 2.18.8+ -->
+  </suppress>
+
+  <suppress until="2027-04-30Z">
+    <!-- CVE-2026-54515, CVE-2026-59888, CVE-2026-59889, GHSA-mhm7-754m-9p8w: @JsonIgnoreProperties,
+         @JsonIgnore (records), and @JsonView bypasses during deserialization.
+         CVE-2026-19032, CVE-2026-54514, CVE-2026-77310: Path, InetSocketAddress, and InetAddress
+         deserialization resolving attacker-controlled input.
+         CVE-2026-68497: unbounded number parsing when binding a string to Duration or XMLGregorianCalendar.
+         Each requires binding untrusted JSON into types that use these annotations or field types.
+         Hadoop's client classes in hadoop-client-api reference none of these annotations and read
+         JSON from cluster services (NameNode, KMS) as untyped maps. Druid's own jackson-databind
+         (2.22.3) is not affected. parquet-jackson's jackson-databind (2.22.2) already has these fixes.
+         Remove when Hadoop ships jackson-databind 2.18.10+. -->
+    <notes><![CDATA[
+      file name: hadoop-client-runtime-3.5.0.jar (shaded jackson-databind 2.18.6)
+    ]]></notes>
+    <filePath regex="true">.*/(hadoop-client-runtime)-[0-9][^/]*\.jar/META-INF/maven/com\.fasterxml\.jackson\.core/jackson-databind/pom\.xml$</filePath>
+    <cve>CVE-2026-19032</cve>
+    <cve>CVE-2026-54514</cve>
+    <cve>CVE-2026-54515</cve>
+    <cve>CVE-2026-59888</cve>
+    <cve>CVE-2026-59889</cve>
+    <cve>CVE-2026-68497</cve>
+    <cve>CVE-2026-77310</cve>
+    <vulnerabilityName>GHSA-mhm7-754m-9p8w</vulnerabilityName>
+  </suppress>
+
+  <suppress until="2027-04-30Z">
+    <!-- CVE-2026-45205: StackOverflowError when loading YAML configuration with cycles.
+         commons-configuration2 is shaded inside hadoop-client-runtime-3.5.0.jar for Hadoop metrics2,
+         which loads properties files only. snakeyaml is not shaded into the jar, so YAMLConfiguration
+         cannot load. Remove when Hadoop ships commons-configuration2 2.15.0+. -->
+    <notes><![CDATA[
+      file name: hadoop-client-runtime-3.5.0.jar (shaded commons-configuration2 2.10.1)
+    ]]></notes>
+    <filePath regex="true">.*/(hadoop-client-runtime)-[0-9][^/]*\.jar/META-INF/maven/org\.apache\.commons/commons-configuration2/pom\.xml$</filePath>
+    <cve>CVE-2026-45205</cve>
+  </suppress>
+
   <suppress>
     <!-- CVE-2026-2332: Jetty HTTP/1.1 request smuggling via chunk extension quoted strings.
          CVE-2026-10050: Jetty Digest auth password encoding using ISO-8859-1.
          CVE-2026-19203: Jetty HTTP/1.1 request smuggling via lone-LF chunk terminators.
+         CVE-2024-6763: Jetty HttpURI authority parsing differs from browsers (open redirect/SSRF).
+         Only fixed in Jetty 12.0.12; no Jetty 9.4 fix exists. No Hadoop client class uses HttpURI.
          All affect Jetty shaded inside hadoop-client-runtime-3.5.0.jar. Druid cannot upgrade
          the Jetty version inside this shaded jar. The shaded Jetty is used only for Hadoop's
          internal HTTP server (WebHDFS, etc.), not for Druid's own HTTP server (Jetty 12.x).
@@ -863,6 +915,7 @@
     <cve>CVE-2026-2332</cve>
     <cve>CVE-2026-10050</cve>
     <cve>CVE-2026-19203</cve>
+    <cve>CVE-2024-6763</cve>
   </suppress>
 
   <suppress>
@@ -870,6 +923,7 @@
          NEW-ENVIRON flooding).
          CVE-2026-77422, CVE-2026-77423: ReDoS in JLine's built-in grep/less commands via
          user-controlled regex.
+         CVE-2026-77420, CVE-2026-77421: ReDoS via JLine's HISTORY_IGNORE variable and nano regex search.
          JLine is shaded inside hadoop-client-runtime-3.5.0.jar and is used
          only for Hadoop's interactive CLI shell. Druid does not expose a JLine Telnet server
          endpoint or interactive shell session. -->
@@ -881,6 +935,8 @@
     <cve>CVE-2026-56740</cve>
     <cve>CVE-2026-77422</cve>
     <cve>CVE-2026-77423</cve>
+    <cve>CVE-2026-77420</cve>
+    <cve>CVE-2026-77421</cve>
   </suppress>
 
   <suppress>
@@ -917,21 +973,6 @@
   </suppress>
 
   <suppress>
-    <!-- CVE-2026-87823: Out-of-bounds memory read in ByteBuffer frame-size methods via negative offset values.
-         CVE-2026-87795: Out-of-bounds memory read in ZstdDictCompress constructor via unvalidated offset/length.
-         Both are fixed in zstd-jni 1.5.7-14. Suppressed until zstd-jni is upgraded.
-         Based on the analysis in https://github.com/apache/druid/pull/20236#issuecomment-5646494509,
-         this vulnerability should not affect Druid since the relevant code paths do not get activated
-          -->
-    <notes><![CDATA[
-      file name: zstd-jni-1.5.7-11.jar
-    ]]></notes>
-    <packageUrl regex="true">^pkg:maven/com\.github\.luben/zstd-jni@1\.5\.7\-11$</packageUrl>
-    <cve>CVE-2026-87823</cve>
-    <cve>CVE-2026-87795</cve>
-  </suppress>
-
-  <suppress>
     <!-- CVE-2026-90559/93452: OOB read/write in Snappy.uncompress/compress(ByteBuffer, ByteBuffer).
          CVE-2026-108106: unbounded memory allocation during decompression (fixed in 1.1.10.9).
          snappy-java is a transitive dependency (via Kafka, Parquet, etc.); Druid's own snappy
@@ -957,16 +998,5 @@
     <packageUrl regex="true">^pkg:maven/org\.pac4j/pac4j-(core|oidc)@5\.7\.10$</packageUrl>
     <cve>CVE-2026-82463</cve>
     <cve>CVE-2026-82461</cve>
-  </suppress>
-
-  <suppress>
-    <!-- TODO: CVE-2026-93879 has no public details yet (not in NVD, GitHub Security Advisories,
-         or VulnCheck as of 2026-10-14). Suppressed temporarily to unblock the build;
-         revisit and re-assess once the advisory is published. -->
-    <notes><![CDATA[
-      file name: hibernate-validator-9.1.4.Final.jar
-    ]]></notes>
-    <packageUrl regex="true">^pkg:maven/org\.hibernate\.validator/hibernate-validator@.*$</packageUrl>
-    <cve>CVE-2026-93879</cve>
   </suppress>
 </suppressions>
