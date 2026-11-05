@@ -36,11 +36,13 @@ import org.apache.druid.data.input.impl.JsonInputFormat;
 import org.apache.druid.data.input.impl.StringDimensionSchema;
 import org.apache.druid.data.input.impl.TimestampSpec;
 import org.apache.druid.error.DruidException;
+import org.apache.druid.indexer.TaskInfo;
 import org.apache.druid.indexer.TaskLocation;
 import org.apache.druid.indexer.TaskStatus;
 import org.apache.druid.indexer.granularity.UniformGranularitySpec;
 import org.apache.druid.indexing.common.SegmentUpgradeMetrics;
 import org.apache.druid.indexing.common.TestUtils;
+import org.apache.druid.indexing.common.task.NoopTask;
 import org.apache.druid.indexing.common.task.Task;
 import org.apache.druid.indexing.overlord.DataSourceMetadata;
 import org.apache.druid.indexing.overlord.IndexerMetadataStorageCoordinator;
@@ -91,6 +93,8 @@ import org.apache.druid.java.util.emitter.service.ServiceMetricEvent;
 import org.apache.druid.java.util.metrics.DruidMonitorSchedulerConfig;
 import org.apache.druid.java.util.metrics.StubServiceEmitter;
 import org.apache.druid.metadata.PendingSegmentRecord;
+import org.apache.druid.metadata.TaskLookup;
+import org.apache.druid.metadata.TaskLookup.TaskLookupType;
 import org.apache.druid.query.DruidMetrics;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.segment.TestHelper;
@@ -3103,6 +3107,7 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
     mockScheduledSpec(scheduleStartingIn(Period.hours(1)), true);
     mockStream(Map.of("0", "20"));
     mockNoMetadata();
+    mockTaskCreatedSinceLatestCycleStart(true);
     EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
     replayAll();
 
@@ -3111,8 +3116,35 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
     supervisor.runInternal();
     supervisor.runInternal();
 
-    // No task was added to the queue, as the first cycle starts in an hour.
+    // No task was added to the queue, as the latest cycle ran and the next one starts in an hour.
     Assertions.assertEquals(BasicState.IDLE, supervisor.stateManager.getSupervisorState());
+    verifyAll();
+  }
+
+  @Test
+  public void testScheduledSupervisor_startsLatestCycleIfItNeverStarted()
+  {
+    mockScheduledSpec(scheduleStartingIn(Period.hours(1)), true);
+    mockStream(Map.of("0", "20"));
+    mockCommittedOffsets(Map.of("0", "5"));
+    // No task was created since the latest cycle start, for instance because the Overlord leader changed first.
+    mockTaskCreatedSinceLatestCycleStart(false);
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    final Capture<Task> submitted = Capture.newInstance();
+    EasyMock.expect(taskQueue.add(EasyMock.capture(submitted))).andReturn(true);
+    replayAll();
+
+    final TestSeekableStreamSupervisor supervisor = new ScheduledTestSeekableStreamSupervisor();
+    supervisor.start();
+    supervisor.runInternal();
+
+    // The latest cycle started in the first run, rather than in an hour.
+    Assertions.assertEquals(
+        Map.of("0", "20"),
+        ((TestSeekableStreamIndexTask) submitted.getValue()).getIOConfig()
+                                                            .getEndSequenceNumbers()
+                                                            .getPartitionSequenceNumberMap()
+    );
     verifyAll();
   }
 
@@ -3123,6 +3155,7 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
     mockStream(Map.of("0", "20", "1", "15"));
     // Partition 0 has been read up to the latest offset, partition 1 up to offset 5.
     mockCommittedOffsets(Map.of("0", "20", "1", "5"));
+    mockTaskCreatedSinceLatestCycleStart(false);
     EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
     final Capture<Task> submitted = Capture.newInstance();
     EasyMock.expect(taskQueue.add(EasyMock.capture(submitted))).andReturn(true);
@@ -3154,7 +3187,11 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
     mockScheduledSpec(SHORT_SCHEDULE, true);
     mockStream(Map.of("0", "20"));
     mockCommittedOffsets(Map.of("0", "20"));
+    mockTaskCreatedSinceLatestCycleStart(false);
     EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    taskRunner.unregisterListener("testSupervisorId");
+    indexTaskClient.close();
+    recordSupplier.close();
     replayAll();
 
     final TestSeekableStreamSupervisor supervisor = new ScheduledTestSeekableStreamSupervisor();
@@ -3165,6 +3202,8 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
 
     // The cycle started and ended in the same run without adding tasks to the queue.
     Assertions.assertEquals(BasicState.IDLE, supervisor.stateManager.getSupervisorState());
+    // Stops the runs scheduled at the next cycle starts, which would otherwise outlive the test.
+    supervisor.stop(false);
     verifyAll();
   }
 
@@ -3174,6 +3213,7 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
     mockScheduledSpec(scheduleStartingIn(Period.hours(1)), false);
     mockStream(Map.of("0", "20", "1", "15"));
     mockCommittedOffsets(Map.of("0", "3"));
+    mockTaskCreatedSinceLatestCycleStart(true);
     EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
     final Capture<DataSourceMetadata> written = Capture.newInstance();
     EasyMock.expect(indexerMetadataStorageCoordinator.resetDataSourceMetadata(
@@ -3202,6 +3242,7 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
     mockScheduledSpec(scheduleStartingIn(Period.hours(1)), false);
     mockStream(Map.of("0", "20"));
     mockNoMetadata();
+    mockTaskCreatedSinceLatestCycleStart(true);
     EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
     final Capture<DataSourceMetadata> written = Capture.newInstance();
     EasyMock.expect(indexerMetadataStorageCoordinator.insertDataSourceMetadata(
@@ -3285,6 +3326,7 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
     mockScheduledSpec(SHORT_SCHEDULE, true);
     mockStream(Map.of("0", "20"));
     mockCommittedOffsets(Map.of("0", "5"));
+    mockTaskCreatedSinceLatestCycleStart(false);
     final Capture<Task> submitted = Capture.newInstance();
     // The task created in the first run is discovered in the second run, after it has finished reading.
     EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andAnswer(
@@ -3397,6 +3439,20 @@ public class SeekableStreamSupervisorStateTest extends EasyMockSupport
   private void mockNoMetadata()
   {
     EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(SUPERVISOR_ID)).andReturn(null).anyTimes();
+  }
+
+  /**
+   * Mocks whether the metadata store has a task of the supervisor created since the latest cycle start. Without one,
+   * the latest cycle never started, and the supervisor starts it in its first run.
+   */
+  private void mockTaskCreatedSinceLatestCycleStart(boolean created)
+  {
+    final List<TaskInfo> tasks = created
+                                 ? List.of(new TaskInfo(DateTimes.nowUtc(), TaskStatus.success("task0"), NoopTask.create()))
+                                 : List.of();
+    EasyMock.expect(taskStorage.getTaskInfos(EasyMock.<Map<TaskLookupType, TaskLookup>>anyObject(), EasyMock.eq(DATASOURCE)))
+            .andReturn(tasks)
+            .anyTimes();
   }
 
   private static TestSeekableStreamDataSourceMetadata committedMetadata(Map<String, String> committedOffsets)

@@ -307,8 +307,8 @@ Keep the following in mind:
 
 - Tasks read toward the target offsets as usual: `taskCount`, `replicas`, and `taskDuration` apply. If a cycle has more data than a task reads in `taskDuration`, the supervisor rolls the task over and the next task continues toward the same target offsets.
 - If a cycle is still running when the next one should start, the next cycle starts as soon as the running one ends. Start times that pass while a cycle runs collapse into that single cycle.
-- If the Overlord restarts during a cycle, the supervisor finishes the cycle of the tasks that are still reading. If no task is reading, it waits for the next cycle, which reads whatever the interrupted cycle left. Submitting a supervisor spec and resuming a suspended supervisor also wait for the next cycle.
-- When `useEarliestOffset` is `false`, the supervisor commits the latest offset of every partition without committed offsets as soon as it starts, so the first cycle reads the records published since then.
+- If the Overlord restarts or its leader changes during a cycle, the supervisor finishes the cycle of the tasks that are still reading. If no task is reading and the supervisor created no task since the latest cycle start, that cycle never ran, and the supervisor starts it right away. Otherwise, it waits for the next cycle, which reads whatever an interrupted cycle left. Submitting a supervisor spec and resuming a suspended supervisor work the same way, so a new supervisor runs its first cycle as soon as it starts.
+- When `useEarliestOffset` is `false`, the supervisor commits the latest offset of every partition without committed offsets as soon as it starts, so cycles read only the records published since then.
 - Kafka must retain records for longer than `period` plus the time a cycle takes, or records expire before a cycle reads them.
 - Lag grows between cycles. Alerts on the lag of a scheduled supervisor must allow for a whole `period` of records.
 

@@ -101,6 +101,9 @@ import org.apache.druid.java.util.emitter.service.ServiceEmitter;
 import org.apache.druid.java.util.emitter.service.ServiceMetricEvent;
 import org.apache.druid.metadata.MetadataSupervisorManager;
 import org.apache.druid.metadata.PendingSegmentRecord;
+import org.apache.druid.metadata.TaskLookup.ActiveTaskLookup;
+import org.apache.druid.metadata.TaskLookup.CompleteTaskLookup;
+import org.apache.druid.metadata.TaskLookup.TaskLookupType;
 import org.apache.druid.query.DruidMetrics;
 import org.apache.druid.query.ordering.StringComparators;
 import org.apache.druid.segment.incremental.ParseExceptionReport;
@@ -1180,6 +1183,9 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
   @Nullable
   private volatile Map<PartitionIdType, SequenceOffsetType> cycleTargetOffsets;
   private boolean cycleRecoveryAttempted;
+  // The cycle start that a run is already scheduled for, see scheduleRunAtNextCycleStart().
+  @Nullable
+  private DateTime cycleStartOfScheduledRun;
 
   public SeekableStreamSupervisor(
       final String supervisorTag,
@@ -1249,7 +1255,7 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
     }
 
     if (ioConfig.isScheduled()) {
-      // A supervisor that starts between two cycle starts waits for the next one.
+      // The first run starts this cycle if it never started, see updateIngestionCycle().
       lastCycleStart = ioConfig.getScheduleConfig().getLatestStartAtOrBefore(DateTimes.nowUtc());
     }
 
@@ -4542,7 +4548,6 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
     }
 
     if (!cycleRecoveryAttempted) {
-      cycleRecoveryAttempted = true;
       cycleTargetOffsets = recoverCycleTargetOffsets();
       if (cycleTargetOffsets != null) {
         log.info(
@@ -4550,7 +4555,18 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
             supervisorId,
             cycleTargetOffsets
         );
+      } else if (!hasTaskCreatedSince(lastCycleStart)) {
+        // The latest cycle never started, for instance because the Overlord leader changed between its start and the
+        // run that would have started it. Treating the previous cycle as the last one makes this run start it.
+        log.info(
+            "Supervisor[%s] found no task created since the ingestion cycle of [%s] started, starting that cycle now.",
+            supervisorId,
+            lastCycleStart
+        );
+        lastCycleStart = lastCycleStart.minus(ioConfig.getScheduleConfig().getPeriod());
       }
+      // Set last, so that the next run retries if the metadata store query fails.
+      cycleRecoveryAttempted = true;
     }
 
     if (cycleTargetOffsets != null) {
@@ -4565,6 +4581,7 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
     final DateTime now = DateTimes.nowUtc();
     if (scheduleConfig.getNextStartAfter(lastCycleStart).isAfter(now)) {
       stateManager.maybeSetState(SupervisorStateManager.BasicState.IDLE);
+      scheduleRunAtNextCycleStart();
       return;
     }
 
@@ -4599,6 +4616,28 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
     );
     cycleTargetOffsets = null;
     stateManager.maybeSetState(SupervisorStateManager.BasicState.IDLE);
+    scheduleRunAtNextCycleStart();
+  }
+
+  /**
+   * Schedules a run at the next cycle start, or right away if it has passed, so that the cycle starts on time instead
+   * of at the next periodic run, which can be up to {@code ioConfig.period} later.
+   */
+  private void scheduleRunAtNextCycleStart()
+  {
+    final DateTime nextStart = ioConfig.getScheduleConfig().getNextStartAfter(lastCycleStart);
+    // A stopping supervisor has shut down scheduledExec, which would reject the run.
+    if (nextStart.equals(cycleStartOfScheduledRun) || isStopping()) {
+      return;
+    }
+    cycleStartOfScheduledRun = nextStart;
+    // Like the run scheduled at the end of a task's duration, it waits out the minimum time between runs, so that a
+    // periodic run just before the start doesn't make RunNotice skip it.
+    scheduledExec.schedule(
+        buildRunTask(),
+        nextStart.getMillis() - System.currentTimeMillis() + MAX_RUN_FREQUENCY_MILLIS,
+        TimeUnit.MILLISECONDS
+    );
   }
 
   /**
@@ -4621,6 +4660,20 @@ public abstract class SeekableStreamSupervisor<PartitionIdType, SequenceOffsetTy
       }
     }
     return endOffsets.build();
+  }
+
+  /**
+   * Returns whether the metadata store has a task of this supervisor that was created at or after {@code time}.
+   */
+  private boolean hasTaskCreatedSince(DateTime time)
+  {
+    return taskStorage.getTaskInfos(
+        Map.of(
+            TaskLookupType.ACTIVE, ActiveTaskLookup.getInstance(),
+            TaskLookupType.COMPLETE, new CompleteTaskLookup(null, time)
+        ),
+        dataSource
+    ).stream().anyMatch(info -> !info.getCreatedTime().isBefore(time) && doesTaskMatchSupervisor(info.getTask()));
   }
 
   private boolean isPublishingFromSameOffsets(int groupId, TaskGroup taskGroup)

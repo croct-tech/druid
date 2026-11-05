@@ -36,6 +36,7 @@ import org.apache.druid.data.input.impl.TimestampSpec;
 import org.apache.druid.data.input.kafka.KafkaRecordEntity;
 import org.apache.druid.data.input.kafka.KafkaTopicPartition;
 import org.apache.druid.error.DruidException;
+import org.apache.druid.indexer.TaskInfo;
 import org.apache.druid.indexer.TaskLocation;
 import org.apache.druid.indexer.TaskStatus;
 import org.apache.druid.indexer.granularity.UniformGranularitySpec;
@@ -90,6 +91,8 @@ import org.apache.druid.java.util.emitter.service.AlertBuilder;
 import org.apache.druid.java.util.emitter.service.AlertEvent;
 import org.apache.druid.java.util.metrics.DruidMonitorSchedulerConfig;
 import org.apache.druid.java.util.metrics.StubServiceEmitter;
+import org.apache.druid.metadata.TaskLookup;
+import org.apache.druid.metadata.TaskLookup.TaskLookupType;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.segment.TestHelper;
 import org.apache.druid.segment.incremental.ParseExceptionReport;
@@ -6955,6 +6958,7 @@ public class KafkaSupervisorTest extends EasyMockSupport
     EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
         new KafkaDataSourceMetadata(null)
     ).anyTimes();
+    mockTaskCreatedSinceLatestCycleStart(true);
     taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
     replayAll();
 
@@ -6963,8 +6967,35 @@ public class KafkaSupervisorTest extends EasyMockSupport
     supervisor.runInternal();
     verifyAll();
 
-    // No task was added to the queue, as the first cycle starts in an hour.
+    // No task was added to the queue, as the latest cycle ran and the next one starts in an hour.
     Assertions.assertEquals(SupervisorStateManager.BasicState.IDLE, supervisor.getState());
+  }
+
+  @Test
+  public void testScheduledSupervisor_startsLatestCycleIfItNeverStarted() throws Exception
+  {
+    supervisor = getTestableSupervisorWithScheduleConfig(scheduleStartingIn(Period.hours(1)), true);
+    addSomeEvents(10);
+
+    final Capture<KafkaIndexTask> captured = Capture.newInstance();
+    EasyMock.expect(taskMaster.getTaskQueue()).andReturn(Optional.of(taskQueue)).anyTimes();
+    EasyMock.expect(taskMaster.getTaskRunner()).andReturn(Optional.of(taskRunner)).anyTimes();
+    EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
+    EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
+        new KafkaDataSourceMetadata(null)
+    ).anyTimes();
+    // No task was created since the latest cycle start, for instance because the Overlord leader changed first.
+    mockTaskCreatedSinceLatestCycleStart(false);
+    EasyMock.expect(taskQueue.add(EasyMock.capture(captured))).andReturn(true);
+    taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
+    replayAll();
+
+    supervisor.start();
+    supervisor.runInternal();
+    verifyAll();
+
+    // The latest cycle started in the first run, rather than in an hour.
+    Assertions.assertEquals(getLatestOffsets(), captured.getValue().getIOConfig().getEndSequenceNumbers().getPartitionSequenceNumberMap());
   }
 
   @Test
@@ -6987,6 +7018,7 @@ public class KafkaSupervisorTest extends EasyMockSupport
     EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
         new KafkaDataSourceMetadata(new SeekableStreamEndSequenceNumbers<>(topic, committedOffsets))
     ).anyTimes();
+    mockTaskCreatedSinceLatestCycleStart(false);
     EasyMock.expect(taskQueue.add(EasyMock.capture(captured))).andReturn(true);
     taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
     replayAll();
@@ -7018,17 +7050,22 @@ public class KafkaSupervisorTest extends EasyMockSupport
     EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
         new KafkaDataSourceMetadata(new SeekableStreamEndSequenceNumbers<>(topic, getLatestOffsets()))
     ).anyTimes();
+    mockTaskCreatedSinceLatestCycleStart(false);
     taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
+    taskRunner.unregisterListener(StringUtils.format("KafkaSupervisor-%s", DATASOURCE));
+    taskClient.close();
     replayAll();
 
     supervisor.start();
     supervisor.runInternal();
     waitForNextCycleStart();
     supervisor.runInternal();
-    verifyAll();
 
     // The cycle started and ended in the same run without adding tasks to the queue.
     Assertions.assertEquals(SupervisorStateManager.BasicState.IDLE, supervisor.getState());
+    // Stops the runs scheduled at the next cycle starts, which would otherwise outlive the test.
+    supervisor.stop(false);
+    verifyAll();
   }
 
   @Test
@@ -7049,6 +7086,7 @@ public class KafkaSupervisorTest extends EasyMockSupport
     EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE))
             .andReturn(committedMetadata)
             .anyTimes();
+    mockTaskCreatedSinceLatestCycleStart(true);
     final Map<KafkaTopicPartition, Long> expectedOffsets = new HashMap<>(latestOffsets);
     expectedOffsets.put(partition0, 3L);
     EasyMock.expect(
@@ -7077,6 +7115,7 @@ public class KafkaSupervisorTest extends EasyMockSupport
     EasyMock.expect(taskMaster.getTaskRunner()).andReturn(Optional.of(taskRunner)).anyTimes();
     EasyMock.expect(taskQueue.getActiveTasksForDatasource(DATASOURCE)).andReturn(Map.of()).anyTimes();
     EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(null).anyTimes();
+    mockTaskCreatedSinceLatestCycleStart(true);
     EasyMock.expect(
         indexerMetadataStorageCoordinator.insertDataSourceMetadata(
             DATASOURCE,
@@ -7166,6 +7205,7 @@ public class KafkaSupervisorTest extends EasyMockSupport
     EasyMock.expect(indexerMetadataStorageCoordinator.retrieveDataSourceMetadata(DATASOURCE)).andReturn(
         new KafkaDataSourceMetadata(null)
     ).anyTimes();
+    mockTaskCreatedSinceLatestCycleStart(false);
     // Exactly one task is added: the second run must not create another task for the same offsets.
     EasyMock.expect(taskQueue.add(EasyMock.capture(captured))).andReturn(true).once();
     taskRunner.registerListener(EasyMock.anyObject(TaskRunnerListener.class), EasyMock.anyObject(Executor.class));
@@ -7197,6 +7237,33 @@ public class KafkaSupervisorTest extends EasyMockSupport
   private static ScheduleConfig scheduleStartingIn(Period delay)
   {
     return new ScheduleConfig(Period.days(1), DateTimes.nowUtc().plus(delay));
+  }
+
+  /**
+   * Mocks whether the metadata store has a task of the supervisor created since the latest cycle start. Without one,
+   * the latest cycle never started, and the supervisor starts it in its first run.
+   */
+  private void mockTaskCreatedSinceLatestCycleStart(boolean created)
+  {
+    final List<TaskInfo> tasks = created ? List.of(
+        new TaskInfo(
+            DateTimes.nowUtc(),
+            TaskStatus.success("id0"),
+            createKafkaIndexTask(
+                "id0",
+                DATASOURCE,
+                0,
+                new SeekableStreamStartSequenceNumbers<>(topic, singlePartitionMap(topic, 0, 0L), ImmutableSet.of()),
+                new SeekableStreamEndSequenceNumbers<>(topic, singlePartitionMap(topic, 0, 5L)),
+                null,
+                null,
+                supervisor.getTuningConfig()
+            )
+        )
+    ) : List.of();
+    EasyMock.expect(taskStorage.getTaskInfos(EasyMock.<Map<TaskLookupType, TaskLookup>>anyObject(), EasyMock.eq(DATASOURCE)))
+            .andReturn(tasks)
+            .anyTimes();
   }
 
   private Map<KafkaTopicPartition, Long> getLatestOffsets() throws Exception

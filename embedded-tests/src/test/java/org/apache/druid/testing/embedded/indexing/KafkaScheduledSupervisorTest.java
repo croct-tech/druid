@@ -127,6 +127,34 @@ public class KafkaScheduledSupervisorTest extends StreamIndexTestBase
     verifyRowCount(recordsAfterStart);
   }
 
+  @Test
+  public void test_scheduledSupervisor_startsCyclesOnTimeWhenItsRunPeriodIsLonger()
+  {
+    final String topic = IdUtils.getRandomId();
+    kafkaServer.createTopicWithPartitions(topic, 2);
+
+    // The first cycle reads the empty topic and ends in the supervisor's first run. Without runs at cycle starts, no
+    // other cycle would start before the supervisor's next periodic run, an hour later.
+    final KafkaSupervisorSpec supervisor = createKafkaSupervisor(kafkaServer)
+        .withIoConfig(io -> io
+            .withTaskDuration(TASK_DURATION)
+            .withSupervisorRunPeriod(Period.hours(1))
+            .withScheduleConfig(new ScheduleConfig(CYCLE_PERIOD, null))
+        )
+        .build(dataSource, topic);
+    cluster.callApi().postSupervisor(supervisor);
+    waitForNextIdleState(supervisor.getId());
+
+    publish1kRecords(topic, false);
+    // A cycle that starts while the records are being published reads only some of them, and the supervisor may not
+    // notice that cycle end before its next periodic run. Waiting for some records keeps the test independent of that.
+    indexer.latchableEmitter().waitForEventAggregate(
+        event -> event.hasMetricName("ingest/rows/published").hasDimension(DruidMetrics.DATASOURCE, dataSource),
+        agg -> agg.hasSumAtLeast(1),
+        CYCLE_INGESTION_TIMEOUT_MILLIS
+    );
+  }
+
   private KafkaSupervisorSpec createScheduledKafkaSupervisor(String topic, boolean useEarliestOffset)
   {
     return createKafkaSupervisor(kafkaServer)
