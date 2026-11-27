@@ -124,9 +124,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         # Same build as the Docker tests, plus the web console, which they skip but the image ships.
-        run: |
-          ./mvnw -B versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
-          ./mvnw -B -T1C clean install -pl '!benchmarks' -Pdist,bundle-contrib-exts,skip-static-checks,skip-tests
+        run: ./mvnw -B -T1C clean install -Drevision="$VERSION" -pl '!benchmarks' -Pdist,bundle-contrib-exts,skip-static-checks,skip-tests
 
       - name: Build the Docker image
         env:
@@ -134,6 +132,7 @@ jobs:
         run: |
           DOCKER_BUILDKIT=1 docker build \
             --build-arg BUILD_FROM_SOURCE=false \
+            --build-arg REVISION="$VERSION" \
             -t "$IMAGE:$VERSION" \
             -f distribution/docker/Dockerfile .
 
@@ -145,6 +144,7 @@ jobs:
         run: |
           DOCKER_BUILDKIT=1 docker build \
             --build-arg BUILD_FROM_SOURCE=false \
+            --build-arg REVISION="$VERSION" \
             -t "$IMAGE:$VERSION-native" \
             -f distribution/docker/Dockerfile.native .
 

@@ -11,6 +11,8 @@ A maintainer cuts fork releases by running the `Release` workflow (`.github/work
 
 **Fork commits.** These are the commits on our `master` that aren't on upstream `master` (`git rev-list --count upstream/master..HEAD`), merge commits included. Counting the upstream sync merges gives every commit on `master` a distinct version, even when a sync brings in no new release. The count never resets when the included release changes, because `master` is never rewritten.
 
+**Maven version.** The workflow used to rewrite every POM with `versions:set` before building. Upstream now defines the version once, as the `revision` property, and its Dockerfile takes a `REVISION` build argument (apache/druid#20928). The workflow uses that instead: it builds with `-Drevision=<version>` and passes the same value as `REVISION` to both Dockerfiles, which need it to find the tarball.
+
 We rejected naming releases after the POM version (upstream `master` is `39.0.0-SNAPSHOT`, so `39.0.0-croct.N`), which is how the earlier hand-built images such as `37.0.0-kafka-fix` were named: it names an upstream release that doesn't exist yet.
 
 ## Consequences
